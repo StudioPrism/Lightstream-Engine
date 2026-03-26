@@ -1,7 +1,1124 @@
+// Copyright Studio Prism. Licensed under PolyForm Shield 1.0.0.
+// https://polyformproject.org/licenses/shield/1.0.0
+// Required Notice: Copyright Studio Prism (https://github.com/studioprism)
 //
-//  MathTests.swift
-//  Lightstream
+// Lightstream — LightstreamMathTests
+// MathTests.swift
 //
-//  Created by Jordan Pryor on 3/17/26.
-//
+// Unified test suite for LightstreamMath.
+// Covers: Scalar, Vec2, Vec3.
 
+import Testing
+@testable import LightstreamMath
+
+// MARK: ═══════════════════════════════════════════════════════════════════════
+// SCALAR
+// MARK: ═══════════════════════════════════════════════════════════════════════
+
+@Suite("Scalar — Constants")
+struct ScalarConstantTests {
+
+    @Test("IsEpsilon is 1e-6")
+    func epsilonValue() {
+        #expect(IsEpsilon == 1e-6)
+    }
+}
+
+@Suite("Scalar — IsApproxEqual")
+struct ScalarApproxEqualTests {
+
+    @Test("Equal values return true")
+    func equalValues() {
+        #expect(IsApproxEqual(1.0, 1.0))
+    }
+
+    @Test("Values within default epsilon return true")
+    func withinEpsilon() {
+        #expect(IsApproxEqual(1.0, 1.0 + IsEpsilon * 0.5))
+    }
+
+    @Test("Values outside default epsilon return false")
+    func outsideEpsilon() {
+        #expect(!IsApproxEqual(1.0, 1.0 + IsEpsilon * 2))
+    }
+
+    @Test("Comparison is symmetric")
+    func symmetric() {
+        #expect(IsApproxEqual(1.0, 1.0 + IsEpsilon * 0.5))
+        #expect(IsApproxEqual(1.0 + IsEpsilon * 0.5, 1.0))
+    }
+
+    @Test("Works correctly around zero")
+    func aroundZero() {
+        #expect(IsApproxEqual(0.0, 0.0))
+        #expect(IsApproxEqual(0.0, IsEpsilon * 0.5))
+        #expect(!IsApproxEqual(0.0, IsEpsilon * 2))
+    }
+
+    @Test("Custom epsilon is respected")
+    func customEpsilon() {
+        #expect(IsApproxEqual(1.0, 1.05, epsilon: 0.1))
+        #expect(!IsApproxEqual(1.0, 1.2, epsilon: 0.1))
+    }
+}
+
+@Suite("Scalar — IsApproxZero")
+struct ScalarApproxZeroTests {
+
+    @Test("Exactly zero returns true")
+    func exactlyZero() {
+        #expect(IsApproxZero(0.0))
+    }
+
+    @Test("Value within epsilon of zero returns true")
+    func withinEpsilon() {
+        #expect(IsApproxZero(IsEpsilon * 0.5))
+    }
+
+    @Test("Value outside epsilon of zero returns false")
+    func outsideEpsilon() {
+        #expect(!IsApproxZero(IsEpsilon * 2))
+    }
+
+    @Test("Negative near-zero returns true")
+    func negativeNearZero() {
+        #expect(IsApproxZero(-IsEpsilon * 0.5))
+    }
+}
+
+@Suite("Scalar — IsClamp")
+struct ScalarClampTests {
+
+    @Test("Value below min returns min")
+    func belowMin() {
+        #expect(IsClamp(-5.0, min: 0.0, max: 1.0) == 0.0)
+    }
+
+    @Test("Value above max returns max")
+    func aboveMax() {
+        #expect(IsClamp(5.0, min: 0.0, max: 1.0) == 1.0)
+    }
+
+    @Test("Value within range is unchanged")
+    func withinRange() {
+        #expect(IsClamp(0.5, min: 0.0, max: 1.0) == 0.5)
+    }
+
+    @Test("Value at exact min boundary is unchanged")
+    func atMin() {
+        #expect(IsClamp(0.0, min: 0.0, max: 1.0) == 0.0)
+    }
+
+    @Test("Value at exact max boundary is unchanged")
+    func atMax() {
+        #expect(IsClamp(1.0, min: 0.0, max: 1.0) == 1.0)
+    }
+
+    @Test("Works with negative ranges")
+    func negativeRange() {
+        #expect(IsClamp(-3.0,  min: -5.0, max: -1.0) == -3.0)
+        #expect(IsClamp(0.0,   min: -5.0, max: -1.0) == -1.0)
+        #expect(IsClamp(-10.0, min: -5.0, max: -1.0) == -5.0)
+    }
+}
+
+@Suite("Scalar — saturate")
+struct ScalarSaturateTests {
+
+    @Test("Values in [0,1] are unchanged", arguments: [
+        Float(0.0), Float(0.25), Float(0.5), Float(0.75), Float(1.0)
+    ])
+    func withinRange(value: Float) {
+        #expect(saturate(value) == value)
+    }
+
+    @Test("Value below 0 clamps to 0")
+    func belowZero() {
+        #expect(saturate(-1.0) == 0.0)
+    }
+
+    @Test("Value above 1 clamps to 1")
+    func aboveOne() {
+        #expect(saturate(2.0) == 1.0)
+    }
+}
+
+@Suite("Scalar — IsSign")
+struct ScalarSignTests {
+
+    @Test("Positive value returns 1.0")
+    func positive() {
+        #expect(IsSign(5.0) == 1.0)
+        #expect(IsSign(0.001) == 1.0)
+    }
+
+    @Test("Negative value returns -1.0")
+    func negative() {
+        #expect(IsSign(-5.0) == -1.0)
+        #expect(IsSign(-0.001) == -1.0)
+    }
+
+    @Test("Zero returns 0.0")
+    func zero() {
+        #expect(IsSign(0.0) == 0.0)
+    }
+}
+
+@Suite("Scalar — lerp")
+struct ScalarLerpTests {
+
+    @Test("t=0 returns a")
+    func tZero() {
+        #expect(lerp(0.0, 10.0, t: 0.0) == 0.0)
+    }
+
+    @Test("t=1 returns b")
+    func tOne() {
+        #expect(lerp(0.0, 10.0, t: 1.0) == 10.0)
+    }
+
+    @Test("t=0.5 returns midpoint")
+    func tHalf() {
+        #expect(lerp(0.0, 10.0, t: 0.5) == 5.0)
+    }
+
+    @Test("Extrapolates beyond range when t > 1")
+    func extrapolateAbove() {
+        #expect(lerp(0.0, 10.0, t: 2.0) == 20.0)
+    }
+
+    @Test("Extrapolates beyond range when t < 0")
+    func extrapolateBelow() {
+        #expect(lerp(0.0, 10.0, t: -1.0) == -10.0)
+    }
+}
+
+@Suite("Scalar — inverseLerp")
+struct ScalarInverseLerpTests {
+
+    @Test("Value at a returns 0")
+    func atA() {
+        #expect(inverseLerp(0.0, 10.0, value: 0.0) == 0.0)
+    }
+
+    @Test("Value at b returns 1")
+    func atB() {
+        #expect(inverseLerp(0.0, 10.0, value: 10.0) == 1.0)
+    }
+
+    @Test("Midpoint value returns 0.5")
+    func midpoint() {
+        #expect(inverseLerp(0.0, 10.0, value: 5.0) == 0.5)
+    }
+
+    @Test("Round-trips with lerp")
+    func roundTrip() {
+        let t: Float = 0.37
+        let value = lerp(4.0, 16.0, t: t)
+        let recovered = inverseLerp(4.0, 16.0, value: value)
+        #expect(IsApproxEqual(recovered, t))
+    }
+
+    @Test("Value outside range returns t outside [0,1]")
+    func outsideRange() {
+        #expect(inverseLerp(0.0, 10.0, value: 20.0) == 2.0)
+        #expect(inverseLerp(0.0, 10.0, value: -10.0) == -1.0)
+    }
+}
+
+@Suite("Scalar — remap")
+struct ScalarRemapTests {
+
+    @Test("Maps min of input range to min of output range")
+    func inputMin() {
+        #expect(remap(0.0, inMin: 0.0, inMax: 10.0, outMin: 0.0, outMax: 100.0) == 0.0)
+    }
+
+    @Test("Maps max of input range to max of output range")
+    func inputMax() {
+        #expect(remap(10.0, inMin: 0.0, inMax: 10.0, outMin: 0.0, outMax: 100.0) == 100.0)
+    }
+
+    @Test("Maps midpoint correctly")
+    func midpoint() {
+        #expect(remap(5.0, inMin: 0.0, inMax: 10.0, outMin: 0.0, outMax: 100.0) == 50.0)
+    }
+
+    @Test("Works with non-zero based input range")
+    func offsetInputRange() {
+        #expect(IsApproxEqual(remap(15.0, inMin: 10.0, inMax: 20.0, outMin: 0.0, outMax: 1.0), 0.5))
+    }
+
+    @Test("Works with reversed output range")
+    func reversedOutput() {
+        #expect(remap(0.0, inMin: 0.0, inMax: 10.0, outMin: 1.0, outMax: 0.0) == 1.0)
+    }
+}
+
+@Suite("Scalar — smoothstep")
+struct ScalarSmoothstepTests {
+
+    @Test("Value below edge0 returns 0")
+    func belowEdge0() {
+        #expect(smoothstep(0.0, 1.0, value: -1.0) == 0.0)
+    }
+
+    @Test("Value above edge1 returns 1")
+    func aboveEdge1() {
+        #expect(smoothstep(0.0, 1.0, value: 2.0) == 1.0)
+    }
+
+    @Test("Value at edge0 returns 0")
+    func atEdge0() {
+        #expect(smoothstep(0.0, 1.0, value: 0.0) == 0.0)
+    }
+
+    @Test("Value at edge1 returns 1")
+    func atEdge1() {
+        #expect(smoothstep(0.0, 1.0, value: 1.0) == 1.0)
+    }
+
+    @Test("Midpoint returns 0.5")
+    func midpoint() {
+        #expect(IsApproxEqual(smoothstep(0.0, 1.0, value: 0.5), 0.5))
+    }
+
+    @Test("Output is always in [0, 1]", arguments: [
+        Float(0.0), Float(0.1), Float(0.25), Float(0.5), Float(0.75), Float(0.9), Float(1.0)
+    ])
+    func outputInRange(value: Float) {
+        let result = smoothstep(0.0, 1.0, value: value)
+        #expect(result >= 0.0 && result <= 1.0)
+    }
+}
+
+@Suite("Scalar — IsPowerOfTwo")
+struct ScalarPowerOfTwoTests {
+
+    @Test("Known powers of two return true", arguments: [1, 2, 4, 8, 16, 32, 64, 128, 256, 1024])
+    func knownPowers(value: Int) {
+        #expect(IsPowerOfTwo(value))
+    }
+
+    @Test("Known non-powers return false", arguments: [3, 5, 6, 7, 9, 10, 12, 100])
+    func knownNonPowers(value: Int) {
+        #expect(!IsPowerOfTwo(value))
+    }
+
+    @Test("Zero returns false")
+    func zero() {
+        #expect(!IsPowerOfTwo(0))
+    }
+
+    @Test("Negative values return false")
+    func negative() {
+        #expect(!IsPowerOfTwo(-4))
+    }
+}
+
+@Suite("Scalar — nextPowerOfTwo")
+struct ScalarNextPowerOfTwoTests {
+
+    @Test("Already a power of two returns itself", arguments: [1, 2, 4, 8, 16, 32, 64])
+    func alreadyPower(value: Int) {
+        #expect(nextPowerOfTwo(value) == value)
+    }
+
+    @Test("Non-powers round up correctly", arguments: [
+        (3, 4), (5, 8), (6, 8), (7, 8), (9, 16), (100, 128)
+    ])
+    func roundsUp(input: Int, expected: Int) {
+        #expect(nextPowerOfTwo(input) == expected)
+    }
+
+    @Test("Zero or negative returns 1")
+    func zeroOrNegative() {
+        #expect(nextPowerOfTwo(0) == 1)
+    }
+
+    @Test("Result is always a power of two")
+    func resultIsPowerOfTwo() {
+        for value in 1...200 {
+            #expect(IsPowerOfTwo(nextPowerOfTwo(value)))
+        }
+    }
+}
+
+// MARK: ═══════════════════════════════════════════════════════════════════════
+// VEC2
+// MARK: ═══════════════════════════════════════════════════════════════════════
+
+@Suite("Vec2 — Init & Storage")
+struct Vec2InitTests {
+
+    @Test("Primary init stores correct components")
+    func primaryInit() {
+        let v = Vec2(3.0, 4.0)
+        #expect(v.x == 3.0)
+        #expect(v.y == 4.0)
+    }
+
+    @Test("Splat init fills both components with scalar")
+    func splatInit() {
+        let v = Vec2(5.0)
+        #expect(v.x == 5.0)
+        #expect(v.y == 5.0)
+    }
+
+    @Test("SIMD init stores correct components")
+    func simdInit() {
+        let simd = SIMD2<Float>(7.0, 8.0)
+        let v = Vec2(simd)
+        #expect(v.x == 7.0)
+        #expect(v.y == 8.0)
+    }
+
+    @Test("Component assignment mutates correctly")
+    func componentAssignment() {
+        var v = Vec2(1.0, 2.0)
+        v.x = 9.0
+        v.y = 10.0
+        #expect(v.x == 9.0)
+        #expect(v.y == 10.0)
+    }
+}
+
+@Suite("Vec2 — Constants")
+struct Vec2ConstantTests {
+
+    @Test("zero is (0, 0)")
+    func zero() {
+        #expect(Vec2.zero.x == 0.0)
+        #expect(Vec2.zero.y == 0.0)
+    }
+
+    @Test("one is (1, 1)")
+    func one() {
+        #expect(Vec2.one.x == 1.0)
+        #expect(Vec2.one.y == 1.0)
+    }
+
+    @Test("right is (1, 0)")
+    func right() {
+        #expect(Vec2.right.x == 1.0)
+        #expect(Vec2.right.y == 0.0)
+    }
+
+    @Test("up is (0, 1)")
+    func up() {
+        #expect(Vec2.up.x == 0.0)
+        #expect(Vec2.up.y == 1.0)
+    }
+}
+
+@Suite("Vec2 — Equatable")
+struct Vec2EquatableTests {
+
+    @Test("Identical vectors are equal")
+    func identical() {
+        #expect(Vec2(1.0, 2.0) == Vec2(1.0, 2.0))
+    }
+
+    @Test("Vectors within epsilon are equal")
+    func withinEpsilon() {
+        let a = Vec2(1.0, 2.0)
+        let b = Vec2(1.0 + IsEpsilon * 0.5, 2.0 + IsEpsilon * 0.5)
+        #expect(a == b)
+    }
+
+    @Test("Vectors outside epsilon are not equal")
+    func outsideEpsilon() {
+        #expect(Vec2(1.0, 2.0) != Vec2(1.1, 2.1))
+    }
+
+    @Test("Vectors differing only in x are not equal")
+    func differInX() {
+        #expect(Vec2(1.0, 2.0) != Vec2(9.0, 2.0))
+    }
+
+    @Test("Vectors differing only in y are not equal")
+    func differInY() {
+        #expect(Vec2(1.0, 2.0) != Vec2(1.0, 9.0))
+    }
+}
+
+@Suite("Vec2 — Description")
+struct Vec2DescriptionTests {
+
+    @Test("Description format is correct")
+    func descriptionFormat() {
+        #expect(Vec2(1.0, 2.0).description == "Vec2(1.0, 2.0)")
+    }
+}
+
+@Suite("Vec2 — Length")
+struct Vec2LengthTests {
+
+    @Test("Length of (3, 4) is 5")
+    func knownLength() {
+        #expect(IsApproxEqual(Vec2(3.0, 4.0).length, 5.0))
+    }
+
+    @Test("Length of zero vector is 0")
+    func zeroLength() {
+        #expect(Vec2.zero.length == 0.0)
+    }
+
+    @Test("Length of unit vectors is 1")
+    func unitLength() {
+        #expect(IsApproxEqual(Vec2.right.length, 1.0))
+        #expect(IsApproxEqual(Vec2.up.length, 1.0))
+    }
+
+    @Test("lengthSquared of (3, 4) is 25")
+    func lengthSquared() {
+        #expect(IsApproxEqual(Vec2(3.0, 4.0).lengthSquared, 25.0))
+    }
+
+    @Test("lengthSquared equals length squared")
+    func lengthSquaredConsistency() {
+        let v = Vec2(3.0, 7.0)
+        #expect(IsApproxEqual(v.lengthSquared, v.length * v.length))
+    }
+}
+
+@Suite("Vec2 — Normalize")
+struct Vec2NormalizeTests {
+
+    @Test("Normalized vector has length 1")
+    func normalizedLength() {
+        #expect(IsApproxEqual(Vec2(3.0, 4.0).normalized.length, 1.0))
+    }
+
+    @Test("Normalizing a unit vector returns itself")
+    func normalizeUnitVector() {
+        #expect(Vec2.isApproxEqual(Vec2.right.normalized, Vec2.right))
+        #expect(Vec2.isApproxEqual(Vec2.up.normalized, Vec2.up))
+    }
+
+    @Test("Normalizing zero vector returns zero safely")
+    func normalizeZeroVector() {
+        #expect(Vec2.zero.normalized == Vec2.zero)
+    }
+
+    @Test("Direction is preserved after normalization")
+    func directionPreserved() {
+        let v = Vec2(3.0, 4.0)
+        #expect(IsApproxEqual(Vec2.dot(v.normalized, v.normalized), 1.0))
+    }
+}
+
+@Suite("Vec2 — Dot Product")
+struct Vec2DotTests {
+
+    @Test("Parallel vectors have positive dot product")
+    func parallel() {
+        #expect(Vec2.dot(Vec2.right, Vec2.right) > 0)
+    }
+
+    @Test("Perpendicular vectors have dot product of 0")
+    func perpendicular() {
+        #expect(IsApproxEqual(Vec2.dot(Vec2.right, Vec2.up), 0.0))
+    }
+
+    @Test("Opposite vectors have negative dot product")
+    func opposite() {
+        #expect(Vec2.dot(Vec2.right, -Vec2.right) < 0)
+    }
+
+    @Test("Dot product is commutative")
+    func commutative() {
+        let a = Vec2(2.0, 3.0)
+        let b = Vec2(4.0, 5.0)
+        #expect(IsApproxEqual(Vec2.dot(a, b), Vec2.dot(b, a)))
+    }
+
+    @Test("Known dot product value — (1,2)·(3,4) = 11")
+    func knownValue() {
+        #expect(IsApproxEqual(Vec2.dot(Vec2(1.0, 2.0), Vec2(3.0, 4.0)), 11.0))
+    }
+}
+
+@Suite("Vec2 — Distance")
+struct Vec2DistanceTests {
+
+    @Test("Distance between identical points is 0")
+    func samePoint() {
+        #expect(Vec2.distance(Vec2(1.0, 1.0), Vec2(1.0, 1.0)) == 0.0)
+    }
+
+    @Test("Distance from origin to (3, 4) is 5")
+    func knownDistance() {
+        #expect(IsApproxEqual(Vec2.distance(.zero, Vec2(3.0, 4.0)), 5.0))
+    }
+
+    @Test("Distance is symmetric")
+    func symmetric() {
+        let a = Vec2(1.0, 2.0)
+        let b = Vec2(4.0, 6.0)
+        #expect(IsApproxEqual(Vec2.distance(a, b), Vec2.distance(b, a)))
+    }
+
+    @Test("Distance is always non-negative")
+    func nonNegative() {
+        #expect(Vec2.distance(Vec2(5.0, 5.0), Vec2(1.0, 1.0)) >= 0)
+    }
+}
+
+@Suite("Vec2 — Lerp")
+struct Vec2LerpTests {
+
+    @Test("t=0 returns a")
+    func tZero() {
+        #expect(Vec2.isApproxEqual(Vec2.lerp(.zero, Vec2(10.0, 20.0), t: 0.0), .zero))
+    }
+
+    @Test("t=1 returns b")
+    func tOne() {
+        #expect(Vec2.isApproxEqual(Vec2.lerp(.zero, Vec2(10.0, 20.0), t: 1.0), Vec2(10.0, 20.0)))
+    }
+
+    @Test("t=0.5 returns midpoint")
+    func tHalf() {
+        #expect(Vec2.isApproxEqual(Vec2.lerp(.zero, Vec2(10.0, 20.0), t: 0.5), Vec2(5.0, 10.0)))
+    }
+
+    @Test("Extrapolates beyond range when t > 1")
+    func extrapolate() {
+        #expect(Vec2.isApproxEqual(Vec2.lerp(.zero, Vec2(10.0, 10.0), t: 2.0), Vec2(20.0, 20.0)))
+    }
+}
+
+@Suite("Vec2 — Perpendicular")
+struct Vec2PerpendicularTests {
+
+    @Test("Perpendicular of right is up")
+    func rightIsUp() {
+        #expect(Vec2.isApproxEqual(Vec2.right.perpendicular, Vec2.up))
+    }
+
+    @Test("Perpendicular dot original is zero")
+    func dotIsZero() {
+        let v = Vec2(3.0, 4.0)
+        #expect(IsApproxEqual(Vec2.dot(v, v.perpendicular), 0.0))
+    }
+
+    @Test("Perpendicular preserves length")
+    func preservesLength() {
+        let v = Vec2(3.0, 4.0)
+        #expect(IsApproxEqual(v.perpendicular.length, v.length))
+    }
+
+    @Test("Double perpendicular returns negated original")
+    func doublePerpendicular() {
+        let v = Vec2(3.0, 4.0)
+        #expect(Vec2.isApproxEqual(v.perpendicular.perpendicular, -v))
+    }
+}
+
+@Suite("Vec2 — Angle")
+struct Vec2AngleTests {
+
+    @Test("Right vector has angle 0")
+    func rightAngle() {
+        #expect(IsApproxEqual(Vec2.right.angle, 0.0))
+    }
+
+    @Test("Up vector has angle π/2")
+    func upAngle() {
+        #expect(IsApproxEqual(Vec2.up.angle, Float.pi / 2))
+    }
+
+    @Test("Negative x vector has angle π")
+    func leftAngle() {
+        #expect(IsApproxEqual(abs(Vec2(-1.0, 0.0).angle), Float.pi))
+    }
+
+    @Test("Down vector has angle -π/2")
+    func downAngle() {
+        #expect(IsApproxEqual(Vec2(0.0, -1.0).angle, -Float.pi / 2))
+    }
+}
+
+@Suite("Vec2 — Operators")
+struct Vec2OperatorTests {
+
+    @Test("Addition is component-wise")
+    func addition() {
+        #expect(Vec2.isApproxEqual(Vec2(1, 2) + Vec2(3, 4), Vec2(4, 6)))
+    }
+
+    @Test("Subtraction is component-wise")
+    func subtraction() {
+        #expect(Vec2.isApproxEqual(Vec2(5, 6) - Vec2(1, 2), Vec2(4, 4)))
+    }
+
+    @Test("Scalar multiplication — vec * float")
+    func scalarMultiplyRight() {
+        #expect(Vec2.isApproxEqual(Vec2(2, 3) * 4.0, Vec2(8, 12)))
+    }
+
+    @Test("Scalar multiplication — float * vec")
+    func scalarMultiplyLeft() {
+        #expect(Vec2.isApproxEqual(4.0 * Vec2(2, 3), Vec2(8, 12)))
+    }
+
+    @Test("Scalar division divides all components")
+    func scalarDivision() {
+        #expect(Vec2.isApproxEqual(Vec2(8, 12) / 4.0, Vec2(2, 3)))
+    }
+
+    @Test("Division by zero returns zero safely")
+    func divisionByZero() {
+        #expect(Vec2(8, 12) / 0.0 == .zero)
+    }
+
+    @Test("Negation flips both components")
+    func negation() {
+        #expect(Vec2.isApproxEqual(-Vec2(3.0, -4.0), Vec2(-3.0, 4.0)))
+    }
+
+    @Test("Negation of zero is zero")
+    func negateZero() {
+        #expect(-Vec2.zero == Vec2.zero)
+    }
+
+    @Test("+= mutates in place")
+    func addAssign() {
+        var v = Vec2(1, 2); v += Vec2(3, 4)
+        #expect(Vec2.isApproxEqual(v, Vec2(4, 6)))
+    }
+
+    @Test("-= mutates in place")
+    func subtractAssign() {
+        var v = Vec2(5, 6); v -= Vec2(1, 2)
+        #expect(Vec2.isApproxEqual(v, Vec2(4, 4)))
+    }
+
+    @Test("*= mutates in place")
+    func multiplyAssign() {
+        var v = Vec2(2, 3); v *= 3.0
+        #expect(Vec2.isApproxEqual(v, Vec2(6, 9)))
+    }
+
+    @Test("/= mutates in place")
+    func divideAssign() {
+        var v = Vec2(6, 9); v /= 3.0
+        #expect(Vec2.isApproxEqual(v, Vec2(2, 3)))
+    }
+}
+
+@Suite("Vec2 — isApproxEqual")
+struct Vec2ApproxEqualTests {
+
+    @Test("Identical vectors are approx equal")
+    func identical() {
+        #expect(Vec2.isApproxEqual(Vec2(1, 2), Vec2(1, 2)))
+    }
+
+    @Test("Vectors within epsilon are approx equal")
+    func withinEpsilon() {
+        let a = Vec2(1.0, 2.0)
+        let b = Vec2(1.0 + IsEpsilon * 0.5, 2.0 + IsEpsilon * 0.5)
+        #expect(Vec2.isApproxEqual(a, b))
+    }
+
+    @Test("Vectors outside epsilon are not approx equal")
+    func outsideEpsilon() {
+        #expect(!Vec2.isApproxEqual(Vec2(1, 2), Vec2(1.1, 2.1)))
+    }
+
+    @Test("Custom epsilon is respected")
+    func customEpsilon() {
+        #expect(Vec2.isApproxEqual(Vec2(1, 2), Vec2(1.05, 2.05), epsilon: 0.1))
+        #expect(!Vec2.isApproxEqual(Vec2(1, 2), Vec2(1.2, 2.2), epsilon: 0.1))
+    }
+}
+
+// MARK: ═══════════════════════════════════════════════════════════════════════
+// VEC3
+// MARK: ═══════════════════════════════════════════════════════════════════════
+
+@Suite("Vec3 — Init & Storage")
+struct Vec3InitTests {
+
+    @Test("Primary init stores correct components")
+    func primaryInit() {
+        let v = Vec3(1.0, 2.0, 3.0)
+        #expect(v.x == 1.0)
+        #expect(v.y == 2.0)
+        #expect(v.z == 3.0)
+    }
+
+    @Test("Splat init fills all three components")
+    func splatInit() {
+        let v = Vec3(5.0)
+        #expect(v.x == 5.0)
+        #expect(v.y == 5.0)
+        #expect(v.z == 5.0)
+    }
+
+    @Test("SIMD init stores correct components")
+    func simdInit() {
+        let simd = SIMD3<Float>(7.0, 8.0, 9.0)
+        let v = Vec3(simd)
+        #expect(v.x == 7.0)
+        #expect(v.y == 8.0)
+        #expect(v.z == 9.0)
+    }
+
+    @Test("Component assignment mutates correctly")
+    func componentAssignment() {
+        var v = Vec3(1.0, 2.0, 3.0)
+        v.x = 10.0; v.y = 20.0; v.z = 30.0
+        #expect(v.x == 10.0)
+        #expect(v.y == 20.0)
+        #expect(v.z == 30.0)
+    }
+}
+
+@Suite("Vec3 — Constants")
+struct Vec3ConstantTests {
+
+    @Test("zero is (0, 0, 0)")
+    func zero() {
+        #expect(Vec3.zero == Vec3(0, 0, 0))
+    }
+
+    @Test("one is (1, 1, 1)")
+    func one() {
+        #expect(Vec3.one == Vec3(1, 1, 1))
+    }
+
+    @Test("Axis constants have correct values")
+    func axisValues() {
+        #expect(Vec3.right   == Vec3( 1,  0,  0))
+        #expect(Vec3.left    == Vec3(-1,  0,  0))
+        #expect(Vec3.up      == Vec3( 0,  1,  0))
+        #expect(Vec3.down    == Vec3( 0, -1,  0))
+        #expect(Vec3.forward == Vec3( 0,  0,  1))
+        #expect(Vec3.back    == Vec3( 0,  0, -1))
+    }
+
+    @Test("Axis constants are unit length")
+    func axisLengths() {
+        for axis in [Vec3.right, Vec3.left, Vec3.up, Vec3.down, Vec3.forward, Vec3.back] {
+            #expect(IsApproxEqual(axis.length, 1.0))
+        }
+    }
+
+    @Test("Opposite axis constants are negations of each other")
+    func oppositeAxes() {
+        #expect(Vec3.isApproxEqual(-Vec3.right,   Vec3.left))
+        #expect(Vec3.isApproxEqual(-Vec3.up,      Vec3.down))
+        #expect(Vec3.isApproxEqual(-Vec3.forward, Vec3.back))
+    }
+}
+
+@Suite("Vec3 — Equatable")
+struct Vec3EquatableTests {
+
+    @Test("Identical vectors are equal")
+    func identical() {
+        #expect(Vec3(1, 2, 3) == Vec3(1, 2, 3))
+    }
+
+    @Test("Vectors within epsilon are equal")
+    func withinEpsilon() {
+        let a = Vec3(1.0, 2.0, 3.0)
+        let b = Vec3(1.0 + IsEpsilon * 0.5, 2.0 + IsEpsilon * 0.5, 3.0 + IsEpsilon * 0.5)
+        #expect(a == b)
+    }
+
+    @Test("Vectors outside epsilon are not equal")
+    func outsideEpsilon() {
+        #expect(Vec3(1, 2, 3) != Vec3(1.1, 2, 3))
+    }
+
+    @Test("Vectors differing only in z are not equal")
+    func differInZ() {
+        #expect(Vec3(1, 2, 3) != Vec3(1, 2, 9))
+    }
+}
+
+@Suite("Vec3 — Description")
+struct Vec3DescriptionTests {
+
+    @Test("Description format is correct")
+    func descriptionFormat() {
+        #expect(Vec3(1.0, 2.0, 3.0).description == "Vec3(1.0, 2.0, 3.0)")
+    }
+}
+
+@Suite("Vec3 — Length")
+struct Vec3LengthTests {
+
+    @Test("Length of (2, 3, 6) is 7")
+    func knownLength() {
+        #expect(IsApproxEqual(Vec3(2, 3, 6).length, 7.0))
+    }
+
+    @Test("Length of zero vector is 0")
+    func zeroLength() {
+        #expect(Vec3.zero.length == 0.0)
+    }
+
+    @Test("lengthSquared of (2, 3, 6) is 49")
+    func lengthSquared() {
+        #expect(IsApproxEqual(Vec3(2, 3, 6).lengthSquared, 49.0))
+    }
+
+    @Test("lengthSquared equals length squared")
+    func lengthSquaredConsistency() {
+        let v = Vec3(3, 5, 7)
+        #expect(IsApproxEqual(v.lengthSquared, v.length * v.length))
+    }
+}
+
+@Suite("Vec3 — Normalize")
+struct Vec3NormalizeTests {
+
+    @Test("Normalized vector has length 1")
+    func normalizedLength() {
+        #expect(IsApproxEqual(Vec3(2, 3, 6).normalized.length, 1.0))
+    }
+
+    @Test("Normalizing axis constants returns themselves")
+    func normalizeAxisConstants() {
+        #expect(Vec3.isApproxEqual(Vec3.right.normalized,   Vec3.right))
+        #expect(Vec3.isApproxEqual(Vec3.up.normalized,      Vec3.up))
+        #expect(Vec3.isApproxEqual(Vec3.forward.normalized, Vec3.forward))
+    }
+
+    @Test("Normalizing zero vector returns zero safely")
+    func normalizeZeroVector() {
+        #expect(Vec3.zero.normalized == Vec3.zero)
+    }
+}
+
+@Suite("Vec3 — Dot Product")
+struct Vec3DotTests {
+
+    @Test("Perpendicular axis vectors have dot product of 0")
+    func perpendicularAxes() {
+        #expect(IsApproxEqual(Vec3.dot(Vec3.right,   Vec3.up),      0.0))
+        #expect(IsApproxEqual(Vec3.dot(Vec3.right,   Vec3.forward), 0.0))
+        #expect(IsApproxEqual(Vec3.dot(Vec3.up,      Vec3.forward), 0.0))
+    }
+
+    @Test("Dot product is commutative")
+    func commutative() {
+        let a = Vec3(1, 2, 3)
+        let b = Vec3(4, 5, 6)
+        #expect(IsApproxEqual(Vec3.dot(a, b), Vec3.dot(b, a)))
+    }
+
+    @Test("Known dot product value — (1,2,3)·(4,5,6) = 32")
+    func knownValue() {
+        #expect(IsApproxEqual(Vec3.dot(Vec3(1, 2, 3), Vec3(4, 5, 6)), 32.0))
+    }
+}
+
+@Suite("Vec3 — Cross Product")
+struct Vec3CrossTests {
+
+    @Test("cross(right, up) = forward — defines coordinate system")
+    func rightCrossUpIsForward() {
+        #expect(Vec3.isApproxEqual(Vec3.cross(Vec3.right, Vec3.up), Vec3.forward))
+    }
+
+    @Test("cross(up, right) = back — anti-commutative")
+    func upCrossRightIsBack() {
+        #expect(Vec3.isApproxEqual(Vec3.cross(Vec3.up, Vec3.right), Vec3.back))
+    }
+
+    @Test("cross(a, b) = -cross(b, a)")
+    func antiCommutative() {
+        let a = Vec3(1, 2, 3)
+        let b = Vec3(4, 5, 6)
+        #expect(Vec3.isApproxEqual(Vec3.cross(a, b), -Vec3.cross(b, a)))
+    }
+
+    @Test("Result is perpendicular to both inputs")
+    func resultIsPerpendicular() {
+        let a = Vec3(1, 2, 3)
+        let b = Vec3(4, 5, 6)
+        let c = Vec3.cross(a, b)
+        #expect(IsApproxEqual(Vec3.dot(c, a), 0.0))
+        #expect(IsApproxEqual(Vec3.dot(c, b), 0.0))
+    }
+
+    @Test("Cross product of parallel vectors is zero")
+    func parallelVectorsGiveZero() {
+        #expect(Vec3.isApproxEqual(Vec3.cross(Vec3.right, Vec3.right), Vec3.zero))
+    }
+
+    @Test("cross(up, forward) = right")
+    func upCrossForwardIsRight() {
+        #expect(Vec3.isApproxEqual(Vec3.cross(Vec3.up, Vec3.forward), Vec3.right))
+    }
+}
+
+@Suite("Vec3 — Distance")
+struct Vec3DistanceTests {
+
+    @Test("Distance between identical points is 0")
+    func samePoint() {
+        #expect(Vec3.distance(Vec3(1, 2, 3), Vec3(1, 2, 3)) == 0.0)
+    }
+
+    @Test("Distance from origin to (2, 3, 6) is 7")
+    func knownDistance() {
+        #expect(IsApproxEqual(Vec3.distance(.zero, Vec3(2, 3, 6)), 7.0))
+    }
+
+    @Test("Distance is symmetric")
+    func symmetric() {
+        let a = Vec3(1, 2, 3)
+        let b = Vec3(4, 6, 3)
+        #expect(IsApproxEqual(Vec3.distance(a, b), Vec3.distance(b, a)))
+    }
+}
+
+@Suite("Vec3 — Lerp")
+struct Vec3LerpTests {
+
+    @Test("t=0 returns a")
+    func tZero() {
+        #expect(Vec3.isApproxEqual(Vec3.lerp(Vec3(1, 2, 3), Vec3(10, 20, 30), t: 0.0), Vec3(1, 2, 3)))
+    }
+
+    @Test("t=1 returns b")
+    func tOne() {
+        #expect(Vec3.isApproxEqual(Vec3.lerp(Vec3(1, 2, 3), Vec3(10, 20, 30), t: 1.0), Vec3(10, 20, 30)))
+    }
+
+    @Test("t=0.5 returns midpoint")
+    func tHalf() {
+        #expect(Vec3.isApproxEqual(Vec3.lerp(.zero, Vec3(10, 20, 30), t: 0.5), Vec3(5, 10, 15)))
+    }
+
+    @Test("Extrapolates beyond range when t > 1")
+    func extrapolate() {
+        #expect(Vec3.isApproxEqual(Vec3.lerp(.zero, Vec3(10, 10, 10), t: 2.0), Vec3(20, 20, 20)))
+    }
+}
+
+@Suite("Vec3 — Reflect")
+struct Vec3ReflectTests {
+
+    @Test("Reflecting off a floor flips the y component")
+    func reflectOffFloor() {
+        let result = Vec3.reflect(Vec3(1, -1, 0), normal: Vec3.up)
+        #expect(Vec3.isApproxEqual(result, Vec3(1, 1, 0)))
+    }
+
+    @Test("Reflecting off a wall flips the x component")
+    func reflectOffWall() {
+        let result = Vec3.reflect(Vec3(1, 0, 0), normal: Vec3.right)
+        #expect(Vec3.isApproxEqual(result, Vec3(-1, 0, 0)))
+    }
+
+    @Test("Reflected vector has same length as input")
+    func preservesLength() {
+        let v = Vec3(1, -2, 3)
+        let result = Vec3.reflect(v, normal: Vec3.up)
+        #expect(IsApproxEqual(result.length, v.length))
+    }
+
+    @Test("Reflecting a vector parallel to surface leaves it unchanged")
+    func reflectParallelToSurface() {
+        let v = Vec3(1, 0, 0)
+        #expect(Vec3.isApproxEqual(Vec3.reflect(v, normal: Vec3.up), v))
+    }
+}
+
+@Suite("Vec3 — Operators")
+struct Vec3OperatorTests {
+
+    @Test("Addition is component-wise")
+    func addition() {
+        #expect(Vec3.isApproxEqual(Vec3(1, 2, 3) + Vec3(4, 5, 6), Vec3(5, 7, 9)))
+    }
+
+    @Test("Subtraction is component-wise")
+    func subtraction() {
+        #expect(Vec3.isApproxEqual(Vec3(5, 7, 9) - Vec3(1, 2, 3), Vec3(4, 5, 6)))
+    }
+
+    @Test("Scalar multiplication — vec * float")
+    func scalarMultiplyRight() {
+        #expect(Vec3.isApproxEqual(Vec3(1, 2, 3) * 2.0, Vec3(2, 4, 6)))
+    }
+
+    @Test("Scalar multiplication — float * vec")
+    func scalarMultiplyLeft() {
+        #expect(Vec3.isApproxEqual(2.0 * Vec3(1, 2, 3), Vec3(2, 4, 6)))
+    }
+
+    @Test("Scalar division divides all components")
+    func scalarDivision() {
+        #expect(Vec3.isApproxEqual(Vec3(2, 4, 6) / 2.0, Vec3(1, 2, 3)))
+    }
+
+    @Test("Division by zero returns zero safely")
+    func divisionByZero() {
+        #expect(Vec3(1, 2, 3) / 0.0 == .zero)
+    }
+
+    @Test("Negation flips all three components")
+    func negation() {
+        #expect(Vec3.isApproxEqual(-Vec3(1, -2, 3), Vec3(-1, 2, -3)))
+    }
+
+    @Test("+= mutates in place")
+    func addAssign() {
+        var v = Vec3(1, 2, 3); v += Vec3(4, 5, 6)
+        #expect(Vec3.isApproxEqual(v, Vec3(5, 7, 9)))
+    }
+
+    @Test("-= mutates in place")
+    func subtractAssign() {
+        var v = Vec3(5, 7, 9); v -= Vec3(1, 2, 3)
+        #expect(Vec3.isApproxEqual(v, Vec3(4, 5, 6)))
+    }
+
+    @Test("*= mutates in place")
+    func multiplyAssign() {
+        var v = Vec3(1, 2, 3); v *= 3.0
+        #expect(Vec3.isApproxEqual(v, Vec3(3, 6, 9)))
+    }
+
+    @Test("/= mutates in place")
+    func divideAssign() {
+        var v = Vec3(3, 6, 9); v /= 3.0
+        #expect(Vec3.isApproxEqual(v, Vec3(1, 2, 3)))
+    }
+}
+
+@Suite("Vec3 — isApproxEqual")
+struct Vec3ApproxEqualTests {
+
+    @Test("Identical vectors are approx equal")
+    func identical() {
+        #expect(Vec3.isApproxEqual(Vec3(1, 2, 3), Vec3(1, 2, 3)))
+    }
+
+    @Test("Vectors within epsilon are approx equal")
+    func withinEpsilon() {
+        let a = Vec3(1.0, 2.0, 3.0)
+        let b = Vec3(1.0 + IsEpsilon * 0.5, 2.0 + IsEpsilon * 0.5, 3.0 + IsEpsilon * 0.5)
+        #expect(Vec3.isApproxEqual(a, b))
+    }
+
+    @Test("Vectors outside epsilon are not approx equal")
+    func outsideEpsilon() {
+        #expect(!Vec3.isApproxEqual(Vec3(1, 2, 3), Vec3(1.1, 2, 3)))
+    }
+
+    @Test("Custom epsilon is respected")
+    func customEpsilon() {
+        #expect(Vec3.isApproxEqual(Vec3(1, 2, 3), Vec3(1.05, 2.05, 3.05), epsilon: 0.1))
+        #expect(!Vec3.isApproxEqual(Vec3(1, 2, 3), Vec3(1.2, 2, 3), epsilon: 0.1))
+    }
+}
