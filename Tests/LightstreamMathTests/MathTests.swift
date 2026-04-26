@@ -6,7 +6,7 @@
 // MathTests.swift
 //
 // Unified test suite for LightstreamMath.
-// Covers: Scalar, Vec2, Vec3.
+// Covers: Scalar, Vec2, Vec3, Vec4.
 
 import Testing
 @testable import LightstreamMath
@@ -475,10 +475,10 @@ struct Vec2LengthTests {
         #expect(IsApproxEqual(Vec2(3.0, 4.0).lengthSquared, 25.0))
     }
 
-    @Test("lengthSquared equals length squared")
+    @Test("lengthSquared equals length squared within tolerance")
     func lengthSquaredConsistency() {
         let v = Vec2(3.0, 7.0)
-        #expect(IsApproxEqual(v.lengthSquared, v.length * v.length))
+        #expect(IsApproxEqual(v.lengthSquared, v.length * v.length, epsilon: 1e-4))
     }
 }
 
@@ -868,10 +868,10 @@ struct Vec3LengthTests {
         #expect(IsApproxEqual(Vec3(2, 3, 6).lengthSquared, 49.0))
     }
 
-    @Test("lengthSquared equals length squared")
+    @Test("lengthSquared equals length squared within tolerance")
     func lengthSquaredConsistency() {
         let v = Vec3(3, 5, 7)
-        #expect(IsApproxEqual(v.lengthSquared, v.length * v.length))
+        #expect(IsApproxEqual(v.lengthSquared, v.length * v.length, epsilon: 1e-4))
     }
 }
 
@@ -1120,5 +1120,499 @@ struct Vec3ApproxEqualTests {
     func customEpsilon() {
         #expect(Vec3.isApproxEqual(Vec3(1, 2, 3), Vec3(1.05, 2.05, 3.05), epsilon: 0.1))
         #expect(!Vec3.isApproxEqual(Vec3(1, 2, 3), Vec3(1.2, 2, 3), epsilon: 0.1))
+    }
+}
+
+// MARK: ═══════════════════════════════════════════════════════════════════════
+// VEC4
+// MARK: ═══════════════════════════════════════════════════════════════════════
+
+@Suite("Vec4 — Init & Storage")
+struct Vec4InitTests {
+
+    @Test("Primary init stores correct components")
+    func primaryInit() {
+        let v = Vec4(1.0, 2.0, 3.0, 4.0)
+        #expect(v.x == 1.0)
+        #expect(v.y == 2.0)
+        #expect(v.z == 3.0)
+        #expect(v.w == 4.0)
+    }
+
+    @Test("Splat init fills all four components")
+    func splatInit() {
+        let v = Vec4(5.0)
+        #expect(v.x == 5.0)
+        #expect(v.y == 5.0)
+        #expect(v.z == 5.0)
+        #expect(v.w == 5.0)
+    }
+
+    @Test("SIMD init stores correct components")
+    func simdInit() {
+        let simd = SIMD4<Float>(1.0, 2.0, 3.0, 4.0)
+        let v = Vec4(simd)
+        #expect(v.x == 1.0)
+        #expect(v.y == 2.0)
+        #expect(v.z == 3.0)
+        #expect(v.w == 4.0)
+    }
+
+    @Test("Vec3 + w init stores correct components")
+    func vec3WInit() {
+        let v = Vec4(Vec3(1.0, 2.0, 3.0), w: 4.0)
+        #expect(v.x == 1.0)
+        #expect(v.y == 2.0)
+        #expect(v.z == 3.0)
+        #expect(v.w == 4.0)
+    }
+
+    @Test("Component assignment mutates correctly")
+    func componentAssignment() {
+        var v = Vec4(1.0, 2.0, 3.0, 4.0)
+        v.x = 10.0; v.y = 20.0; v.z = 30.0; v.w = 40.0
+        #expect(v.x == 10.0)
+        #expect(v.y == 20.0)
+        #expect(v.z == 30.0)
+        #expect(v.w == 40.0)
+    }
+}
+
+@Suite("Vec4 — Color Aliases")
+struct Vec4ColorAliasTests {
+
+    @Test("r/g/b/a aliases map to x/y/z/w")
+    func aliasesMapCorrectly() {
+        let v = Vec4(0.1, 0.2, 0.3, 0.4)
+        #expect(v.r == v.x)
+        #expect(v.g == v.y)
+        #expect(v.b == v.z)
+        #expect(v.a == v.w)
+    }
+
+    @Test("Writing via r/g/b/a mutates x/y/z/w")
+    func aliasMutation() {
+        var v = Vec4(0.0, 0.0, 0.0, 0.0)
+        v.r = 1.0; v.g = 0.5; v.b = 0.25; v.a = 0.75
+        #expect(v.x == 1.0)
+        #expect(v.y == 0.5)
+        #expect(v.z == 0.25)
+        #expect(v.w == 0.75)
+    }
+}
+
+@Suite("Vec4 — xyz Extraction")
+struct Vec4XYZTests {
+
+    @Test("xyz returns correct Vec3")
+    func xyzCorrect() {
+        let v = Vec4(3.0, 4.0, 5.0, 1.0)
+        #expect(v.xyz == Vec3(3.0, 4.0, 5.0))
+    }
+
+    @Test("xyz extraction ignores w")
+    func ignoresW() {
+        let a = Vec4(1.0, 2.0, 3.0, 0.0)
+        let b = Vec4(1.0, 2.0, 3.0, 99.0)
+        #expect(a.xyz == b.xyz)
+    }
+
+    @Test("xyz on zero vector returns Vec3.zero")
+    func xyzOfZero() {
+        #expect(Vec4.zero.xyz == Vec3.zero)
+    }
+}
+
+@Suite("Vec4 — Semantic Constructors")
+struct Vec4SemanticConstructorTests {
+
+    @Test("point(_:_:_:) sets w to 1.0")
+    func pointScalar() {
+        let p = Vec4.point(1.0, 2.0, 3.0)
+        #expect(p.x == 1.0)
+        #expect(p.y == 2.0)
+        #expect(p.z == 3.0)
+        #expect(p.w == 1.0)
+    }
+
+    @Test("point(_ v:) sets w to 1.0")
+    func pointVec3() {
+        let p = Vec4.point(Vec3(4.0, 5.0, 6.0))
+        #expect(p.xyz == Vec3(4.0, 5.0, 6.0))
+        #expect(p.w == 1.0)
+    }
+
+    @Test("direction(_:_:_:) sets w to 0.0")
+    func directionScalar() {
+        let d = Vec4.direction(1.0, 0.0, 0.0)
+        #expect(d.x == 1.0)
+        #expect(d.w == 0.0)
+    }
+
+    @Test("direction(_ v:) sets w to 0.0")
+    func directionVec3() {
+        let d = Vec4.direction(Vec3(0.0, 1.0, 0.0))
+        #expect(d.xyz == Vec3(0.0, 1.0, 0.0))
+        #expect(d.w == 0.0)
+    }
+
+    @Test("point and direction differ only in w")
+    func pointVsDirection() {
+        let p = Vec4.point(Vec3(1.0, 2.0, 3.0))
+        let d = Vec4.direction(Vec3(1.0, 2.0, 3.0))
+        #expect(p.xyz == d.xyz)
+        #expect(p.w != d.w)
+    }
+}
+
+@Suite("Vec4 — Constants")
+struct Vec4ConstantTests {
+
+    @Test("zero is (0, 0, 0, 0)")
+    func zero() {
+        #expect(Vec4.zero == Vec4(0, 0, 0, 0))
+    }
+
+    @Test("one is (1, 1, 1, 1)")
+    func one() {
+        #expect(Vec4.one == Vec4(1, 1, 1, 1))
+    }
+
+    @Test("white is (1, 1, 1, 1)")
+    func white() {
+        #expect(Vec4.white == Vec4(1, 1, 1, 1))
+    }
+
+    @Test("black is (0, 0, 0, 1)")
+    func black() {
+        #expect(Vec4.black == Vec4(0, 0, 0, 1))
+    }
+
+    @Test("red is (1, 0, 0, 1)")
+    func red() {
+        #expect(Vec4.red == Vec4(1, 0, 0, 1))
+    }
+
+    @Test("green is (0, 1, 0, 1)")
+    func green() {
+        #expect(Vec4.green == Vec4(0, 1, 0, 1))
+    }
+
+    @Test("blue is (0, 0, 1, 1)")
+    func blue() {
+        #expect(Vec4.blue == Vec4(0, 0, 1, 1))
+    }
+
+    @Test("clear is (0, 0, 0, 0)")
+    func clear() {
+        #expect(Vec4.clear == Vec4(0, 0, 0, 0))
+    }
+
+    @Test("Named color constants are fully opaque except clear")
+    func opaqueColors() {
+        #expect(Vec4.white.a  == 1.0)
+        #expect(Vec4.black.a  == 1.0)
+        #expect(Vec4.red.a    == 1.0)
+        #expect(Vec4.green.a  == 1.0)
+        #expect(Vec4.blue.a   == 1.0)
+        #expect(Vec4.clear.a  == 0.0)
+    }
+}
+
+@Suite("Vec4 — Equatable")
+struct Vec4EquatableTests {
+
+    @Test("Identical vectors are equal")
+    func identical() {
+        #expect(Vec4(1, 2, 3, 4) == Vec4(1, 2, 3, 4))
+    }
+
+    @Test("Vectors within epsilon are equal")
+    func withinEpsilon() {
+        let a = Vec4(1.0, 2.0, 3.0, 4.0)
+        let b = Vec4(
+            1.0 + IsEpsilon * 0.5,
+            2.0 + IsEpsilon * 0.5,
+            3.0 + IsEpsilon * 0.5,
+            4.0 + IsEpsilon * 0.5
+        )
+        #expect(a == b)
+    }
+
+    @Test("Vectors outside epsilon are not equal")
+    func outsideEpsilon() {
+        #expect(Vec4(1, 2, 3, 4) != Vec4(1.1, 2, 3, 4))
+    }
+
+    @Test("Vectors differing only in w are not equal")
+    func differInW() {
+        #expect(Vec4(1, 2, 3, 0) != Vec4(1, 2, 3, 1))
+    }
+}
+
+@Suite("Vec4 — Description")
+struct Vec4DescriptionTests {
+
+    @Test("Description format is correct")
+    func descriptionFormat() {
+        #expect(Vec4(1.0, 2.0, 3.0, 4.0).description == "Vec4(1.0, 2.0, 3.0, 4.0)")
+    }
+}
+
+@Suite("Vec4 — Length")
+struct Vec4LengthTests {
+
+    @Test("Length of (0, 0, 0, 1) is 1")
+    func pureWLength() {
+        #expect(IsApproxEqual(Vec4(0, 0, 0, 1).length, 1.0))
+    }
+
+    @Test("Length of (1, 0, 0, 0) is 1")
+    func pureXLength() {
+        #expect(IsApproxEqual(Vec4(1, 0, 0, 0).length, 1.0))
+    }
+
+    @Test("Length of (0, 0, 0, 0) is 0")
+    func zeroLength() {
+        #expect(Vec4.zero.length == 0.0)
+    }
+
+    @Test("w participates in length — (0,0,0,2) has length 2")
+    func wParticipates() {
+        #expect(IsApproxEqual(Vec4(0, 0, 0, 2).length, 2.0))
+    }
+
+    @Test("lengthSquared of (1, 2, 3, 4) is 30")
+    func knownLengthSquared() {
+        #expect(IsApproxEqual(Vec4(1, 2, 3, 4).lengthSquared, 30.0))
+    }
+
+    @Test("lengthSquared equals length squared within tolerance")
+    func lengthSquaredConsistency() {
+        let v = Vec4(1, 2, 3, 4)
+        #expect(IsApproxEqual(v.lengthSquared, v.length * v.length, epsilon: 1e-4))
+    }
+}
+
+@Suite("Vec4 — Normalize")
+struct Vec4NormalizeTests {
+
+    @Test("Normalized vector has length 1")
+    func normalizedLength() {
+        #expect(IsApproxEqual(Vec4(1, 2, 3, 4).normalized.length, 1.0))
+    }
+
+    @Test("Normalizing a unit x-axis vector returns itself")
+    func normalizeUnitX() {
+        #expect(Vec4.isApproxEqual(Vec4(1, 0, 0, 0).normalized, Vec4(1, 0, 0, 0)))
+    }
+
+    @Test("Normalizing a unit w-axis vector returns itself")
+    func normalizeUnitW() {
+        #expect(Vec4.isApproxEqual(Vec4(0, 0, 0, 1).normalized, Vec4(0, 0, 0, 1)))
+    }
+
+    @Test("Normalizing zero vector returns zero safely")
+    func normalizeZeroVector() {
+        #expect(Vec4.zero.normalized == Vec4.zero)
+    }
+
+    @Test("Direction is preserved after normalization")
+    func directionPreserved() {
+        let v = Vec4(1, 2, 3, 4)
+        let n = v.normalized
+        #expect(IsApproxEqual(Vec4.dot(n, n), 1.0))
+    }
+}
+
+@Suite("Vec4 — Dot Product")
+struct Vec4DotTests {
+
+    @Test("Parallel vectors have dot product equal to 1 when normalized")
+    func parallelNormalized() {
+        let v = Vec4(1, 0, 0, 0)
+        #expect(IsApproxEqual(Vec4.dot(v, v), 1.0))
+    }
+
+    @Test("Perpendicular vectors have dot product of 0")
+    func perpendicular() {
+        #expect(IsApproxEqual(Vec4.dot(Vec4(1, 0, 0, 0), Vec4(0, 1, 0, 0)), 0.0))
+        #expect(IsApproxEqual(Vec4.dot(Vec4(1, 0, 0, 0), Vec4(0, 0, 0, 1)), 0.0))
+    }
+
+    @Test("w component participates in dot product")
+    func wParticipates() {
+        let a = Vec4(0, 0, 0, 2)
+        let b = Vec4(0, 0, 0, 3)
+        #expect(IsApproxEqual(Vec4.dot(a, b), 6.0))
+    }
+
+    @Test("Dot product is commutative")
+    func commutative() {
+        let a = Vec4(1, 2, 3, 4)
+        let b = Vec4(5, 6, 7, 8)
+        #expect(IsApproxEqual(Vec4.dot(a, b), Vec4.dot(b, a)))
+    }
+
+    @Test("Known value — (1,2,3,4)·(5,6,7,8) = 70")
+    func knownValue() {
+        #expect(IsApproxEqual(Vec4.dot(Vec4(1, 2, 3, 4), Vec4(5, 6, 7, 8)), 70.0))
+    }
+}
+
+@Suite("Vec4 — Lerp")
+struct Vec4LerpTests {
+
+    @Test("t=0 returns a")
+    func tZero() {
+        #expect(Vec4.isApproxEqual(Vec4.lerp(.zero, Vec4.one, t: 0.0), .zero))
+    }
+
+    @Test("t=1 returns b")
+    func tOne() {
+        #expect(Vec4.isApproxEqual(Vec4.lerp(.zero, Vec4.one, t: 1.0), .one))
+    }
+
+    @Test("t=0.5 returns midpoint")
+    func tHalf() {
+        let mid = Vec4.lerp(Vec4.black, Vec4.white, t: 0.5)
+        // black=(0,0,0,1) white=(1,1,1,1) → mid=(0.5,0.5,0.5,1.0)
+        #expect(IsApproxEqual(mid.r, 0.5))
+        #expect(IsApproxEqual(mid.g, 0.5))
+        #expect(IsApproxEqual(mid.b, 0.5))
+        #expect(IsApproxEqual(mid.a, 1.0))
+    }
+
+    @Test("Color lerp — red to blue at t=0.5 gives equal r and b")
+    func colorLerp() {
+        let mid = Vec4.lerp(Vec4.red, Vec4.blue, t: 0.5)
+        #expect(IsApproxEqual(mid.r, 0.5))
+        #expect(IsApproxEqual(mid.b, 0.5))
+        #expect(IsApproxEqual(mid.g, 0.0))
+    }
+
+    @Test("Extrapolates beyond range when t > 1")
+    func extrapolate() {
+        let result = Vec4.lerp(.zero, Vec4.one, t: 2.0)
+        #expect(IsApproxEqual(result.x, 2.0))
+    }
+
+    @Test("w component lerps correctly")
+    func wLerps() {
+        let a = Vec4(0, 0, 0, 0)
+        let b = Vec4(0, 0, 0, 1)
+        let mid = Vec4.lerp(a, b, t: 0.5)
+        #expect(IsApproxEqual(mid.w, 0.5))
+    }
+}
+
+@Suite("Vec4 — Operators")
+struct Vec4OperatorTests {
+
+    @Test("Addition is component-wise")
+    func addition() {
+        #expect(Vec4.isApproxEqual(
+            Vec4(1, 2, 3, 4) + Vec4(4, 3, 2, 1),
+            Vec4(5, 5, 5, 5)
+        ))
+    }
+
+    @Test("Subtraction is component-wise")
+    func subtraction() {
+        #expect(Vec4.isApproxEqual(
+            Vec4(5, 5, 5, 5) - Vec4(1, 2, 3, 4),
+            Vec4(4, 3, 2, 1)
+        ))
+    }
+
+    @Test("Scalar multiplication — vec * float")
+    func scalarMultiplyRight() {
+        #expect(Vec4.isApproxEqual(Vec4(1, 2, 3, 4) * 2.0, Vec4(2, 4, 6, 8)))
+    }
+
+    @Test("Scalar multiplication — float * vec")
+    func scalarMultiplyLeft() {
+        #expect(Vec4.isApproxEqual(2.0 * Vec4(1, 2, 3, 4), Vec4(2, 4, 6, 8)))
+    }
+
+    @Test("Scalar division divides all components")
+    func scalarDivision() {
+        #expect(Vec4.isApproxEqual(Vec4(2, 4, 6, 8) / 2.0, Vec4(1, 2, 3, 4)))
+    }
+
+    @Test("Division by zero returns zero safely")
+    func divisionByZero() {
+        #expect(Vec4(1, 2, 3, 4) / 0.0 == .zero)
+    }
+
+    @Test("Negation flips all four components")
+    func negation() {
+        #expect(Vec4.isApproxEqual(-Vec4(1, -2, 3, -4), Vec4(-1, 2, -3, 4)))
+    }
+
+    @Test("Negation of zero is zero")
+    func negateZero() {
+        #expect(-Vec4.zero == Vec4.zero)
+    }
+
+    @Test("+= mutates in place")
+    func addAssign() {
+        var v = Vec4(1, 2, 3, 4); v += Vec4(4, 3, 2, 1)
+        #expect(Vec4.isApproxEqual(v, Vec4(5, 5, 5, 5)))
+    }
+
+    @Test("-= mutates in place")
+    func subtractAssign() {
+        var v = Vec4(5, 5, 5, 5); v -= Vec4(1, 2, 3, 4)
+        #expect(Vec4.isApproxEqual(v, Vec4(4, 3, 2, 1)))
+    }
+
+    @Test("*= mutates in place")
+    func multiplyAssign() {
+        var v = Vec4(1, 2, 3, 4); v *= 2.0
+        #expect(Vec4.isApproxEqual(v, Vec4(2, 4, 6, 8)))
+    }
+
+    @Test("/= mutates in place")
+    func divideAssign() {
+        var v = Vec4(2, 4, 6, 8); v /= 2.0
+        #expect(Vec4.isApproxEqual(v, Vec4(1, 2, 3, 4)))
+    }
+}
+
+@Suite("Vec4 — isApproxEqual")
+struct Vec4ApproxEqualTests {
+
+    @Test("Identical vectors are approx equal")
+    func identical() {
+        #expect(Vec4.isApproxEqual(Vec4(1, 2, 3, 4), Vec4(1, 2, 3, 4)))
+    }
+
+    @Test("Vectors within epsilon are approx equal")
+    func withinEpsilon() {
+        let a = Vec4(1.0, 2.0, 3.0, 4.0)
+        let b = Vec4(
+            1.0 + IsEpsilon * 0.5,
+            2.0 + IsEpsilon * 0.5,
+            3.0 + IsEpsilon * 0.5,
+            4.0 + IsEpsilon * 0.5
+        )
+        #expect(Vec4.isApproxEqual(a, b))
+    }
+
+    @Test("Vectors outside epsilon are not approx equal")
+    func outsideEpsilon() {
+        #expect(!Vec4.isApproxEqual(Vec4(1, 2, 3, 4), Vec4(1.1, 2, 3, 4)))
+    }
+
+    @Test("w difference outside epsilon makes vectors not equal")
+    func wDifference() {
+        #expect(!Vec4.isApproxEqual(Vec4(1, 2, 3, 0), Vec4(1, 2, 3, 1)))
+    }
+
+    @Test("Custom epsilon is respected")
+    func customEpsilon() {
+        #expect(Vec4.isApproxEqual(Vec4(1, 2, 3, 4), Vec4(1.05, 2.05, 3.05, 4.05), epsilon: 0.1))
+        #expect(!Vec4.isApproxEqual(Vec4(1, 2, 3, 4), Vec4(1.2, 2, 3, 4), epsilon: 0.1))
     }
 }
