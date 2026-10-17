@@ -1,156 +1,62 @@
-# Lightstream
+# Lightstream Engine
 
-> A cross-platform Swift game engine developed by Studio Prism.
+Experimental Swift engine foundations by [Studio Prism](https://github.com/StudioPrism).
 
-Lightstream is a modular, Swift-native game engine targeting macOS (Metal), Windows (Vulkan), and Linux (Vulkan). It is the foundation powering Studio Prism's Future titles.
+This repository contains a Swift package for math utilities and early engine-core scaffolding. It is research and development work, not a complete engine or a production-ready SDK.
 
----
+## Default-branch implementation
 
-## Status
-
-Lightstream is in active early development. The public API is unstable and subject to change.
-
-| Module | Status |
+| Area | What is present |
 | --- | --- |
-| `LightstreamMath` | 🟢 In Progress |
-| `LightstreamCore` | 🟡 Scaffolded |
-| `LightstreamSim` | ⚪ Planned |
-| `LightstreamNet` | ⚪ Planned |
-| `LightstreamGame` | ⚪ Planned |
-| `LightstreamGfx` | ⚪ Planned |
+| `LightstreamMath` | Scalar utilities and a `Vec2` implementation backed by `SIMD2<Float>` |
+| `LightstreamCore` | Source-file scaffolds for ECS, an engine loop, and events |
+| Tests | Math test sources and an ECS test scaffold |
 
----
+This status describes `main`. The [`Dev` branch](https://github.com/StudioPrism/Lightstream-Engine/tree/Dev) is a separate development branch; check the selected revision before comparing features or test results.
 
-## Architecture
+On `main`, the package currently exposes only `LightstreamMath` and `LightstreamCore`. Renderer, simulation, networking, and game-layer targets appear as commented plans in [Package.swift](Package.swift); they are not active package products.
 
-Lightstream is organized into a strict dependency tier system. Lower tiers have zero knowledge of higher tiers — this boundary is enforced at compile time by SPM.
+The engine-loop and event source files are currently stubs. Graphics backends, a complete ECS runtime, and supported cross-platform releases should not be assumed from the repository layout.
 
-```
-┌─────────────────────────────────────┐
-│           LightstreamGfx            │  Metal (macOS) · Vulkan (Win/Linux)
-├─────────────────────────────────────┤
-│           LightstreamGame           │  Archetypes · Weapons · Match State
-├──────────────────┬──────────────────┤
-│  LightstreamSim  │  LightstreamNet  │  Physics · Collision · Networking
-├──────────────────┴──────────────────┤
-│           LightstreamCore           │  ECS · Engine Loop · Asset Registry
-├─────────────────────────────────────┤
-│           LightstreamMath           │  Vec2/3/4 · Quat · Mat4 · Scalar
-└─────────────────────────────────────┘
-```
+## Get started
 
-| Tier | Modules | Rule |
-| --- | --- | --- |
-| **Foundation** | `LightstreamMath` | Zero platform imports. Compiles unchanged on all targets. |
-| **Core** | `LightstreamCore` | Pure Swift runtime. No graphics, no sockets. Runs headless. |
-| **Shared** | `LightstreamSim`, `LightstreamNet` | Deterministic simulation. Both server and client import this. No graphics dependency. |
-| **Client** | `LightstreamGfx`, `LightstreamGame` | Graphics and input. Never imported by server targets. |
+Install a Swift 6.0-or-newer toolchain with Swift Package Manager, then clone the repository:
 
----
-
-## Modules
-
-### `LightstreamMath`
-
-The numerical foundation of the engine. Zero dependencies. Every other module depends on this.
-
-| Type | Description | Status |
-| --- | --- | --- |
-| `Scalar` | Epsilon, clamping, lerp, smoothstep, bit utilities | ✅ Done |
-| `Vec2` | 2D vector — screen space, UV, input, 2D physics | ✅ Done |
-| `Vec3` | 3D vector — position, velocity, normals, forces | 🔨 In Progress |
-| `Vec4` | Homogeneous coordinates, RGBA color | ⚪ Planned |
-| `Quaternion` | Rotation representation | ⚪ Planned |
-| `Matrix4x4` | Transform math | ⚪ Planned |
-
-All SIMD backing types (`SIMD2<Float>`, `SIMD3<Float>`, etc.) are Swift standard library types — fully cross-platform with no Apple framework dependency.
-
-### `LightstreamCore`
-
-Pure Swift engine runtime. No graphics, no sockets, no game rules. Must compile and run on a headless Linux server with no GPU.
-
-- **EngineLoop** — fixed + variable tick, accumulator pattern
-- **ECS World** — entity-component-system runtime
-- **Event Bus** — typed event dispatch
-- **Asset Registry** — handle-based asset management
-
----
-
-## Platform Support
-
-| Platform | Graphics Backend | Status |
-| --- | --- | --- |
-| macOS | Metal | 🟡 Planned |
-| Windows | Vulkan | 🟡 Planned |
-| Linux | Vulkan | 🟡 Planned |
-
-Platform-specific code is gated with `#if os(macOS)` and `#if os(Windows)` inside source files. The Foundation and Core tiers compile identically on all platforms.
-
----
-
-## Requirements
-
-- Swift 6.0+
-- Swift Package Manager
-
-No third-party dependencies.
-
----
-
-## Building
-
-```bash
-# Build all active targets
+```sh
+git clone https://github.com/StudioPrism/Lightstream-Engine.git
+cd Lightstream-Engine
 swift build
-
-# Run all test suites
 swift test
+```
 
-# Optimized release build
+For an optimized build:
+
+```sh
 swift build -c release
 ```
 
----
+These are the repository's build and test commands. Platform compatibility and test results depend on the toolchain and revision; the existence of the commands is not a claim that every platform has been verified.
 
-## Testing
+## Source map
 
-Lightstream uses [Swift Testing](https://developer.apple.com/xcode/swift-testing/) (`@Test` macro, Swift 5.9+). Tests live in `Tests/` alongside their corresponding module.
+| Path | Purpose |
+| --- | --- |
+| [Package.swift](Package.swift) | Active products, targets, and Swift settings |
+| [Sources/LightstreamMath/](Sources/LightstreamMath/) | Scalar and vector math |
+| [Sources/LightstreamCore/](Sources/LightstreamCore/) | Engine-core scaffolding |
+| [Tests/LightstreamMathTests/](Tests/LightstreamMathTests/) | Math tests |
+| [Tests/LightstreamCoreTests/](Tests/LightstreamCoreTests/) | Core test scaffold |
+| [docs/development.md](docs/development.md) | Scope, verification, and contribution notes |
 
-```
-Tests/
-  LightstreamMathTests/
-    ScalarTests.swift
-    Vec2Tests.swift
-  LightstreamCoreTests/
-```
+## Relationship to other Prism work
 
-```bash
-swift test
-```
+This is the standalone Swift package. [Projekt Alpha](https://github.com/StudioPrism/Projekt-Alpha) is a separate s&box project. The s&box-based Lightstream tooling workflow and the przm.DEV launcher are not implemented by this package.
 
----
+Keep architecture ideas separate from implementation status when extending this repository.
 
-## Project Structure
+## Contributing
 
-```
-Lightstream/
-├── Sources/
-│   ├── LightstreamMath/
-│   │   ├── Scalar/
-│   │   │   └── Scalar.swift
-│   │   └── Vec2/
-│   │       └── Vec2.swift
-│   └── LightstreamCore/
-├── Tests/
-│   ├── LightstreamMathTests/
-│   │   ├── ScalarTests.swift
-│   │   └── Vec2Tests.swift
-│   └── LightstreamCoreTests/
-├── Package.swift
-└── README.md
-```
-
----
+Use [Issues](https://github.com/StudioPrism/Lightstream-Engine/issues) for bounded tasks and bug reports. Follow the [Studio Prism contribution guide](https://github.com/StudioPrism/.github/blob/main/CONTRIBUTING.md) and record the build/test commands and environment used in your pull request.
 
 ## License
 
@@ -159,17 +65,3 @@ Copyright Studio Prism. Licensed under [PolyForm Shield 1.0.0](https://polyformp
 > Required Notice: Copyright Studio Prism (https://github.com/studioprism)
 
 PolyForm Shield allows free use for any purpose **except competing with Studio Prism's commercial products**. You may study, modify, and build on Lightstream — you may not use it to build and sell a competing game engine.
-
----
-
-## Studio Prism
-
-Lightstream is developed and maintained by [Studio Prism](https://github.com/studioprism).
-
-**Titles in development:**
-
-- [**Projekt Alpha(TBA)**](https://github.com/studioprism) — competitive cyberpunk FFA shooter
-
----
-
-*This README reflects the current state of active development and will be updated as modules ship.*

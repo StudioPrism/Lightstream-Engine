@@ -80,3 +80,8 @@ fastlane/test_output
 # https://github.com/johnno1962/injectionforxcode
 
 iOSInjectionProject/
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
