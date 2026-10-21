@@ -1,84 +1,121 @@
-<div align="center">
-  <img src="https://sbox.game/img/sbox-logo-square.svg" width="80px" alt="s&box logo">
+# Lightstream Engine
 
-  [Website] | [Getting Started] | [Forums] | [Documentation] | [Contributing]
-</div>
+**Studio Prism's in-house game engine and development SDK, built as a fork of [Facepunch's s&box](https://github.com/Facepunch/sbox-public).**
 
-[Website]: https://sbox.game/
-[Getting Started]: https://sbox.game/learn/getting-started
-[Forums]: https://sbox.game/f/
-[Documentation]: https://sbox.game/dev/doc/
-[Contributing]: CONTRIBUTING.md
+Lightstream brings engine development, reusable gameplay systems, and studio authoring tools into a shared foundation for Studio Prism's games. Its direction combines responsive sandbox gameplay, deeper physics interaction, and fast iteration through C# hot reload and integrated tooling.
 
-# s&box
+[Studio Prism](https://github.com/StudioPrism) · [Issues](https://github.com/StudioPrism/Lightstream-Engine/issues) · [Upstream s&box](https://github.com/Facepunch/sbox-public) · [s&box documentation](https://sbox.game/dev/doc/)
 
-[s&box](https://sbox.game) is a modern game engine, built on Valve's Source 2 and the latest .NET technology, it provides a modern intuitive editor for creating games.
+## What Lightstream is
 
-![s&box editor](https://cdn.sbox.game/about/editor.webp)
+Lightstream builds on s&box's managed engine, editor, and tooling, with Valve's Source 2 native foundation supplied through upstream binaries. Studio Prism's work will extend that base with shared systems and workflows for developing projects such as **Projekt Alpha9**.
 
-If your goal is to create games using s&box, please start with [getting started guide](https://sbox.game/learn/getting-started).
-This repository is for building the engine from source for those who want to contribute to the development of the engine.
+The intended development experience is simple to get started with and expandable as projects grow: open a project, change a system, test it quickly, and keep reusable work available across the studio.
 
-## Getting the engine
+Our priorities are:
 
-### Steam
+- **Responsive sandbox gameplay:** consistent interaction between movement, weapons, physics, AI, vehicles, and equipment.
+- **Performance:** measure changes, understand their cost, and keep iteration practical.
+- **Fast iteration:** build on the inherited hot-reload and editor workflow.
+- **Integrated authoring:** connect content creation, encounter design, and mission logic.
+- **Flexible workflows:** support studio-specific tools and conventions as needs become concrete.
 
-You can download and install the s&box editor directly from [Steam](https://store.steampowered.com/app/590830/sbox/).
+## Development status
 
-### Compiling from source
+**Early development.** The `Dev` branch contains the s&box-derived engine source and is the integration branch for Lightstream development. The inherited engine functionality should not be read as a list of features authored by Studio Prism.
 
-This repository contains the C# engine, editor, tooling and game content. The native Source 2 core is
-distributed as prebuilt binaries that setup downloads for your platform, so no C++ toolchain is needed.
+The Lightstream-specific systems and tools described below are planned direction. This README does not establish that they are implemented or validated.
 
-| Platform | Setup | Notes |
-|----------|-------|-------|
-| Windows 10 / 11 (x64) | `Setup.bat` | |
-| Linux (x64) | `./Setup.sh` | Binaries target the Steam Linux Runtime, most distros should work. |
-| macOS (Apple Silicon) | `./Setup.sh` | Intel Macs are not supported. |
+| Area | Intended role |
+| --- | --- |
+| Lightstream SDK | Reusable engine extensions, gameplay foundations, and editor tools shared across studio projects |
+| Weapon authoring | Configure weapon behavior, handling, and associated content |
+| Encounter and mission design | Author encounters, objectives, checkpoints, and mission structure |
+| Mission scripting | Implement custom mission logic alongside the authoring tools |
+| przm.DEV integration | Access projects, repositories, tasks, documentation, and installed tools through the studio developer suite |
 
-#### Prerequisites
+**Projekt Alpha9** is a game project built using this foundation. Its campaign, game-specific rules, and content belong in its own repository; reusable engine and SDK work belongs here.
 
-* [Git](https://git-scm.com/downloads)
-* [.NET 10 SDK](https://dotnet.microsoft.com/en-us/download)
-* An IDE for the C# code is recommended: [Visual Studio 2026](https://visualstudio.microsoft.com/) or
-  [Rider](https://www.jetbrains.com/rider/) on Windows, Rider or [VS Code](https://code.visualstudio.com/) on Linux and macOS.
+The earlier standalone Swift engine work is a separate development direction. This branch follows the s&box-based Lightstream architecture.
 
-#### Setup
+## Relationship to s&box
+
+Lightstream is maintained by Studio Prism and derives from Facepunch's s&box project. Upstream code, authorship, and license notices remain part of this repository.
+
+The source here covers the **managed C# engine, editor, tooling, and included content**. The native Source 2 core is supplied as prebuilt binaries; this repository does not provide that core's C++ source. A fork of the managed engine does not imply control over every native rendering or platform feature.
+
+Use upstream documentation for the inherited APIs and editor behavior. Lightstream-specific documentation should accompany each implemented extension.
+
+## Getting started
+
+### Prerequisites
+
+- [Git](https://git-scm.com/downloads)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download)
+- A C# IDE such as [JetBrains Rider](https://www.jetbrains.com/rider/)
+
+### Clone Lightstream
 
 ```bash
-# Clone the repo
-git clone https://github.com/Facepunch/sbox-public.git
-cd sbox-public
-
-# Windows
-Setup.bat
-
-# Linux / macOS
-./Setup.sh
+git clone --branch Dev https://github.com/StudioPrism/Lightstream-Engine.git
+cd Lightstream-Engine
 ```
 
-Once setup completes, the game (sbox) and editor (sbox-dev.exe) run from the `game` folder.
+### Set up the engine
 
-#### Staying up to date
+Run the setup entry point for your platform from the repository root:
 
-Pulling on Git will run a hook that fetches any new native binaries or content that changed and regenerates the interop bindings. Build the C# code from your IDE as usual, or rerun `Setup.bat` for a full incremental rebuild including shaders and content.
+| Platform | Command |
+| --- | --- |
+| Windows | `Setup.bat` |
+| Linux / macOS | `./Setup.sh` |
 
-## Contributing
+The inherited setup downloads required native artifacts and builds the managed engine, shaders, and content. Availability of a setup script does not establish that a platform has been tested by Studio Prism; native artifact availability and upstream requirements still apply.
 
-If you would like to contribute to the engine, please see the [contributing guide](CONTRIBUTING.md).
+Open `engine/Sandbox-Engine.slnx` in your IDE after setup. Follow setup output for executable locations and launch instructions.
 
-If you want to report bugs or request new features, see [sbox-issues](https://github.com/Facepunch/sbox-public/issues/).
+### Build and checks
+
+The inherited build workflow uses `SboxBuild`:
+
+```bash
+dotnet run --project engine/Tools/SboxBuild/SboxBuild.csproj -- build --config Developer
+dotnet run --project engine/Tools/SboxBuild/SboxBuild.csproj -- test --filter "TestCategory!=LiveBackend"
+dotnet run --project engine/Tools/SboxBuild/SboxBuild.csproj -- format --verify
+```
+
+Engine and integration tests require the native artifacts and the appropriate engine environment. See [AGENTS.md](AGENTS.md) for repository build conventions.
+
+## Repository layout
+
+| Path | Purpose |
+| --- | --- |
+| `engine/` | Managed engine, editor, launcher, and build tools |
+| `engine/Tests/` | Managed, engine, and integration test projects |
+| `game/addons/` | Included addons and editor tooling |
+| `game/core/` | Included shaders, materials, models, and other core content |
+| `game/bin/` | Native artifacts and build output; do not commit generated output |
+
+Keep generated interop bindings and build products out of manual edits. Preserve upstream structure where practical so future upstream changes can be reviewed and integrated.
+
+## Development and contributions
+
+Use `Dev` for ongoing integration and focused feature branches for individual changes. Describe whether a change is Lightstream-specific or an upstream fix, and include relevant validation.
+
+Report Lightstream issues and proposals in [this repository](https://github.com/StudioPrism/Lightstream-Engine/issues). When an issue is confirmed to affect unmodified upstream s&box, consult [Facepunch's issue tracker](https://github.com/Facepunch/sbox-public/issues) as well.
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) before making changes. Some inherited guidance still refers to upstream s&box; follow it in that context.
 
 ## Documentation
 
-Full documentation, tutorials, and API references are available at [sbox.game/dev/](https://sbox.game/dev/).
+- [s&box developer documentation](https://sbox.game/dev/doc/)
+- [s&box API reference](https://sbox.game/api)
+- [Upstream repository](https://github.com/Facepunch/sbox-public)
 
-## License
+## License and attribution
 
-The s&box engine source code is licensed under the [MIT License](LICENSE.md).
+The s&box engine source code is licensed under the [MIT License](LICENSE.md). Preserve the applicable copyright and license notices.
 
-Certain native binaries in `game/bin` are not covered by the MIT license. These binaries are distributed under the s&box EULA. You must agree to the terms of the EULA to use them.
+Certain native binaries in `game/bin` are **not** covered by the MIT license and are distributed under the s&box EULA. You must agree to its terms to use those binaries.
 
-This project includes third-party components that are separately licensed.
-Those components are not covered by the MIT license above and remain subject
-to their original licenses as indicated in `game/thirdpartylegalnotices`.
+Third-party components retain their separate licenses, as indicated in `game/thirdpartylegalnotices` and the applicable component notices. Lightstream branding does not replace those terms.
