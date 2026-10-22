@@ -1,0 +1,21 @@
+﻿@namespace Sandbox.Test.Generated
+@using Sandbox.UI
+
+<span @onclick=@Clicked>Inner Text</span>
+<span @onclick=@(() => DoSomething())>Inner Text</span>
+<MyPanel @OnEvent=@Clicked>Inner Text</MyPanel>
+<MyPanel @OnEvent=@(() => DoSomething())>Inner Text</MyPanel>
+<span @onclick=@ClickedWithArgument>Inner Text</span>
+
+@code{
+
+    void Clicked()
+    {
+        
+    }
+
+    void ClickedWithArgument(PanelEvent argument)
+    {
+
+    }
+}

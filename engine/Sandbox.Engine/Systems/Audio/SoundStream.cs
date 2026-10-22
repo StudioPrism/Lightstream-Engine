@@ -1,0 +1,153 @@
+
+namespace Sandbox;
+
+public sealed partial class SoundStream : IHandle, IDisposable
+{
+	internal CAudioStreamManaged native;
+
+	#region IHandle
+	void IHandle.HandleInit( IntPtr ptr )
+	{
+		native = ptr;
+	}
+
+	void IHandle.HandleDestroy()
+	{
+		native = IntPtr.Zero;
+	}
+
+	bool IHandle.HandleValid() => !native.IsNull;
+
+	#endregion
+
+	/// <summary>
+	/// Number of samples per second, as set during its creation.
+	/// </summary>
+	public int SampleRate { get; internal set; }
+
+	/// <summary>
+	/// Number of audio channels, as set during its creation.
+	/// </summary>
+	public int Channels { get; internal set; }
+
+	public int QueuedSampleCount => native.IsValid ? (int)native.QueuedSampleCount() : 0;
+	public int MaxWriteSampleCount => native.IsValid ? (int)native.MaxWriteSampleCount() : 0;
+	public int LatencySamplesCount => native.IsValid ? (int)native.LatencySamplesCount() : 0;
+
+	internal SoundStream() { }
+	internal SoundStream( HandleCreationData _ ) { }
+
+	public SoundStream( int sampleRate = 44100, int channels = 1 ) : this()
+	{
+		if ( Application.IsHeadless || Application.IsUnitTest )
+			return;
+
+		if ( channels <= 0 || channels > 16 )
+			throw new ArgumentException( "Invalid number of channels" );
+
+		if ( sampleRate < 1024 )
+			throw new ArgumentException( "Invalid sample rate" );
+
+		using ( var h = IHandle.MakeNextHandle( this ) )
+		{
+#pragma warning disable CA2000 // Dispose objects before losing scope
+			// The "created" stream links to this so we dont want to dispose it
+			var stream = CAudioStreamManaged.Create( channels, (uint)sampleRate );
+#pragma warning restore CA2000 // Dispose objects before losing scope
+			stream.Channels = channels;
+			stream.SampleRate = sampleRate;
+		}
+	}
+
+	~SoundStream()
+	{
+		MainThread.QueueDispose( this );
+	}
+
+	public unsafe void WriteData( Span<short> data )
+	{
+		if ( !native.IsValid )
+			throw new ArgumentException( "Invalid sound stream" );
+
+		if ( data.Length <= 0 )
+			return;
+
+		fixed ( short* data_ptr = data )
+		{
+			native.WriteAudioData( (IntPtr)data_ptr, (uint)(data.Length / Channels), (uint)Channels );
+		}
+	}
+
+	IntPtr voiceDecoder;
+
+	/// <summary>
+	/// Decode a voice packet and queue it. Each stream has its own decoder, so use one stream
+	/// per speaker, created at <see cref="Sound.VoiceSampleRate"/>. Returns the number of samples written.
+	/// </summary>
+	public int WriteVoiceData( ReadOnlySpan<byte> data )
+	{
+		if ( !native.IsValid || data.Length < 2 )
+			return 0;
+
+		if ( voiceDecoder == IntPtr.Zero )
+			voiceDecoder = VoiceManager.CreateDecoder();
+
+		var output = System.Buffers.ArrayPool<short>.Shared.Rent( VoiceManager.MaxPacketSamples );
+
+		var samples = VoiceManager.Decode( voiceDecoder, data, output );
+		if ( samples > 0 )
+			WriteData( output.AsSpan( 0, samples ) );
+
+		System.Buffers.ArrayPool<short>.Shared.Return( output );
+		return samples;
+	}
+
+	/// <summary>
+	/// Close the stream: signals that no more data will be written.
+	/// Once the internal buffer drains, <see cref="SoundHandle.IsPlaying"/> will become <c>false</c>.
+	/// </summary>
+	public void Close()
+	{
+		if ( native.IsValid ) native.Close();
+	}
+
+	public void Dispose()
+	{
+		if ( voiceDecoder != IntPtr.Zero )
+		{
+			VoiceManager.DestroyDecoder( voiceDecoder );
+			voiceDecoder = IntPtr.Zero;
+		}
+
+		if ( !native.IsValid ) return;
+
+		GC.SuppressFinalize( this );
+
+		// Destroy() drops our reference; the native stream is reference counted and frees only once its
+		// last mixer is gone, so it's never freed mid-mix. Runs on the main thread (the finalizer routes
+		// here via QueueDispose), where Destroy frees the managed handle.
+		native.Destroy();
+		native = IntPtr.Zero;
+	}
+
+	/// <summary>
+	/// Play sound of the stream.
+	/// </summary>
+	public SoundHandle Play( float volume = 1.0f, float pitch = 1.0f )
+	{
+		if ( !native.IsValid )
+			return default;
+
+		CSfxTable table = native.GetSfxTable();
+		if ( table.IsNull )
+			return default;
+
+		return Sound.PlayFile( table, volume, pitch, 0, 0.0f, "Sound Stream" );
+	}
+
+	/// <summary>
+	/// Play sound of the stream.
+	/// </summary>
+	[Obsolete( "Decibels are obsolete" )]
+	public SoundHandle Play( float volume, float pitch, float decibels ) => Play( volume, pitch );
+}

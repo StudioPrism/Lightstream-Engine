@@ -1,0 +1,121 @@
+﻿using System;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
+
+namespace Sandbox;
+
+public static class LauncherEnvironment
+{
+	/// <summary>
+	/// The folder containing sbox.exe
+	/// </summary>
+	public static string GamePath { get; set; }
+
+	/// <summary>
+	/// The folder containing Sandbox.Engine.dll
+	/// </summary>
+	public static string ManagedDllPath { get; set; }
+
+	public static string PlatformName
+	{
+		get
+		{
+			var platform = OperatingSystem.IsWindows() ? "win"
+				: OperatingSystem.IsLinux() ? "linuxsteamrt"
+				: OperatingSystem.IsMacOS() ? "osx"
+				: throw new Exception( "Unsupported platform" );
+
+			var architecture = RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "arm64" : "64";
+			return $"{platform}{architecture}";
+		}
+	}
+
+	public static void Init()
+	{
+		AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
+
+		GamePath = System.IO.Path.TrimEndingDirectorySeparator( AppContext.BaseDirectory );
+
+		// this exe is in a folder inside bin - bin/win64, bin/managed
+		if ( System.IO.Path.GetFileName( System.IO.Path.GetDirectoryName( GamePath ) ) == "bin" )
+		{
+			// go up two folders
+			GamePath = System.IO.Path.GetDirectoryName( GamePath );
+			GamePath = System.IO.Path.GetDirectoryName( GamePath );
+		}
+
+		// this exe is in the game folder
+		ManagedDllPath = $"{GamePath}/bin/managed/";
+		var nativeDllPath = $"{GamePath}/bin/{PlatformName}/";
+
+		// make the game dir our current dir
+		Environment.CurrentDirectory = GamePath;
+
+		System.Environment.SetEnvironmentVariable( "FACEPUNCH_ENGINE", GamePath );
+
+		UpdateNativeDllPath( nativeDllPath );
+
+		// Don't update the user-level FACEPUNCH_ENGINE env var if we're running an exported standalone game!
+#if !SBOX_STANDALONE
+		_ = UpdateEnginePathAsync( GamePath );
+#endif
+	}
+
+	/// <summary>
+	/// Allows unit tests and csproj to find the engine path.
+	/// </summary>
+	private static async Task UpdateEnginePathAsync( string gamePath )
+	{
+		try
+		{
+			await Task.Run( () =>
+			{
+				if ( System.Environment.GetEnvironmentVariable( "FACEPUNCH_ENGINE", EnvironmentVariableTarget.User ) != gamePath )
+				{
+					System.Environment.SetEnvironmentVariable( "FACEPUNCH_ENGINE", gamePath, EnvironmentVariableTarget.User );
+				}
+			} ).ConfigureAwait( false );
+		}
+		catch ( Exception e )
+		{
+			Console.Error.WriteLine( $"Failed to update FACEPUNCH_ENGINE: {e}" );
+		}
+	}
+
+	private static void UpdateNativeDllPath( string nativeDllPath )
+	{
+		// WARNING: this calls into Sandbox.Engine.dll - so we need to put it in
+		// this method, which is executed AFTER CurrentDomain_AssemblyResolve is set
+		// so that managed can find the correct dll
+		NetCore.NativeDllPath = nativeDllPath;
+
+		//
+		// Put our native dll path first so that when looking up native dlls we'll
+		// always use the ones from our folder first
+		//
+		if ( OperatingSystem.IsWindows() )
+		{
+			var path = System.Environment.GetEnvironmentVariable( "PATH" );
+			path = $"{nativeDllPath};{path}";
+			System.Environment.SetEnvironmentVariable( "PATH", path );
+		}
+	}
+
+	private static Assembly CurrentDomain_AssemblyResolve( object sender, ResolveEventArgs args )
+	{
+		var trim = args.Name.Split( ',' )[0];
+
+		var name = $"{ManagedDllPath}/{trim}.dll";
+
+		// dlls with resources inside appear as a different name
+		name = name.Replace( ".resources.dll", ".dll" );
+
+		if ( System.IO.File.Exists( name ) )
+		{
+			return Assembly.LoadFrom( name );
+		}
+
+		return null;
+	}
+}

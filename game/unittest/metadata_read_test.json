@@ -1,0 +1,6 @@
+{
+  "string_value": "string!",
+  "int_value":  567,
+  "float_value": 567.89,
+  "int_array": [ 2, 3, 4, 5, 6 ]
+}

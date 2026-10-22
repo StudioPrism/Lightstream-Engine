@@ -1,0 +1,49 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <VersionPrefix>1.0.1</VersionPrefix>
+    <TargetFramework>net10.0</TargetFramework>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <AssemblyName>Sandbox.SolutionGenerator</AssemblyName>
+    <PackageId>Sandbox.SolutionGenerator</PackageId>
+    <NoWarn>1701;1702;1591</NoWarn>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+	<ItemGroup>
+		<DotNetCliToolReference Include="T5.TextTransform.Tool" Version="1.1.0-*" />
+	</ItemGroup>
+	
+  <ItemGroup>
+    <ProjectReference Include="..\Sandbox.Compiling\Sandbox.Compiling.csproj" />
+    <ProjectReference Include="..\Sandbox.System\Sandbox.System.csproj" />
+  </ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="System.CodeDom" Version="9.0.9" />
+	</ItemGroup>
+
+
+	<ItemGroup>
+    <None Update="Templates\Project.tt">
+      <Generator>TextTemplatingFilePreprocessor</Generator>
+      <LastGenOutput>Project.cs</LastGenOutput>
+      <CustomToolNamespace>Sandbox.SolutionGenerator</CustomToolNamespace>
+    </None>
+  </ItemGroup>
+	
+  <ItemGroup>
+    <Service Include="{508349b6-6b84-4df5-91f0-309beebad82d}" />
+  </ItemGroup>
+  
+</Project>

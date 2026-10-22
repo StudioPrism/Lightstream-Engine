@@ -1,0 +1,292 @@
+﻿using Sandbox.UI;
+
+namespace Sandbox.Modals;
+
+public interface IModalSystem
+{
+	internal static IModalSystem Current { get; set; }
+
+	public bool HasModalsOpen();
+	public void CloseAll( bool immediate = false );
+	public void Game( string packageIdent );
+	public void Map( string packageIdent );
+	public void Package( string packageIdent, string page );
+	public void Organization( Package.Organization org );
+	public void Review( Package package );
+	public void Report( string packageIdent );
+	public void PackageSelect( string query, Action<Package> onPackageSelected, Action<string> onFilterChanged = null );
+	public void MapSelect( Action<string> onMapSelected, string selected = null );
+	public void FriendsList( in FriendsListModalOptions options );
+	public void Server( Sandbox.Network.LobbyInformation lobby );
+	public void ServerList( in ServerListConfig config );
+	public void Settings( string page = "" );
+	public void CreateGame( in CreateGameOptions options );
+	public void Player( SteamId steamid, string page = "" );
+	public void News( Sandbox.Services.News newsitem );
+	public void PlayerList();
+	public void WorkshopPublish( in WorkshopPublishOptions options );
+	public void Notice( string title, string message, string icon );
+	public void ServiceConnector();
+
+	/// <summary>
+	/// The menu that is shown when escape is pressed while playing.
+	/// </summary>
+	public void PauseMenu();
+
+	/// <summary>
+	/// Shows the benchmark results panel after a local benchmark run completes.
+	/// </summary>
+	public void BenchmarkResults( Guid batchId, IReadOnlyList<BenchmarkTestSummary> summaries );
+
+	public bool IsModalOpen { get; }
+	public bool IsPauseMenuOpen { get; }
+}
+
+
+public struct FriendsListModalOptions
+{
+	public FriendsListModalOptions()
+	{
+	}
+
+	/// <summary>
+	/// Show offline members
+	/// </summary>
+	public bool ShowOfflineMembers { get; set; } = true;
+
+	/// <summary>
+	/// Show online (but not in-game) members
+	/// </summary>
+	public bool ShowOnlineMembers { get; set; } = true;
+
+	/// <summary>
+	/// If set, the modal will open anchored next to a panel (eg. the button that opened it)
+	/// instead of centered on screen.
+	/// </summary>
+	public Anchoring? Anchor { get; set; }
+
+	/// <summary>
+	/// Anchors a modal next to a source panel (eg. the button that opened it), instead of it
+	/// opening centered on screen. See <see cref="FriendsListModalOptions.Anchor"/>.
+	/// </summary>
+	public struct Anchoring
+	{
+		public Anchoring() { }
+
+		/// <summary>
+		/// The panel to anchor next to.
+		/// </summary>
+		public Panel Panel { get; set; }
+
+		/// <summary>
+		/// Which side of <see cref="Panel"/> to anchor to.
+		/// </summary>
+		public ModalAnchorPosition Position { get; set; } = ModalAnchorPosition.BelowRight;
+
+		/// <summary>
+		/// Gap between <see cref="Panel"/> and the modal.
+		/// </summary>
+		public float Offset { get; set; } = 8.0f;
+	}
+}
+
+/// <summary>
+/// Where to anchor a modal relative to a source panel. See <see cref="FriendsListModalOptions.Anchoring"/>.
+/// </summary>
+public enum ModalAnchorPosition
+{
+	/// <summary>
+	/// Below the source panel, aligned to its left edge.
+	/// </summary>
+	BelowLeft,
+
+	/// <summary>
+	/// Below the source panel, aligned to its right edge.
+	/// </summary>
+	BelowRight,
+
+	/// <summary>
+	/// Above the source panel, aligned to its left edge.
+	/// </summary>
+	AboveLeft,
+
+	/// <summary>
+	/// Above the source panel, aligned to its right edge.
+	/// </summary>
+	AboveRight,
+}
+
+
+public struct ServerListConfig
+{
+	public ServerListConfig( string game = null, string map = null )
+	{
+		GamePackageFilter = game;
+		MapPackageFilter = map;
+	}
+
+	public string GamePackageFilter { get; set; }
+	public string MapPackageFilter { get; set; }
+}
+
+/// <summary>
+/// Passed to IModalSystem.CreateGame
+/// </summary>
+public struct CreateGameOptions
+{
+	public CreateGameOptions( Package package, Action<CreateGameResults> onComplete = null )
+	{
+		Package = package;
+		OnComplete = onComplete;
+	}
+
+	public Package Package { get; set; }
+	public Action<CreateGameResults> OnComplete { get; set; }
+
+	/// <summary>
+	/// The setup to edit instead of loading the player's last saved setup for this game.
+	/// </summary>
+	public CreateGameResults? InitialSettings { get; set; }
+
+	/// <summary>
+	/// Show this as a settings form with a Save Settings button. The completion callback decides what happens next.
+	/// </summary>
+	public bool ConfigureOnly { get; set; }
+
+	/// <summary>
+	/// Minimum server capacity required by the caller, such as the number of players in a party.
+	/// </summary>
+	public int MinimumPlayers { get; set; }
+}
+
+public struct CreateGameResults
+{
+	public CreateGameResults()
+	{
+	}
+
+	public Dictionary<string, string> GameSettings { get; set; } = new();
+
+	[Obsolete( "Use Map instead" )]
+	public string MapIdent => Map;
+
+	/// <summary>
+	/// The user selected map. This can be an ident of a package, or path to a mount scene.
+	/// </summary>
+	public string Map { get; set; }
+
+	public int MaxPlayers { get; set; }
+
+	public string ServerName { get; set; }
+
+	public Sandbox.Network.LobbyPrivacy Privacy { get; set; }
+}
+
+/// <summary>
+/// Passed to IModalSystem.WorkshopPublish
+/// </summary>
+public struct WorkshopPublishOptions
+{
+	public WorkshopPublishOptions()
+	{
+
+	}
+
+	/// <summary>
+	/// The default title of this item. The user will be able to change it.
+	/// </summary>
+	public string Title { get; set; }
+
+	/// <summary>
+	/// The description of this item. The user will be able to change it.
+	/// </summary>
+	public string Description { get; set; }
+
+	/// <summary>
+	/// 512x512 thumbnail image, no transparency
+	/// </summary>
+	public Bitmap Thumbnail { get; set; }
+
+	/// <summary>
+	/// The filesystem containing the files to publish
+	/// </summary>
+	public Storage.Entry StorageEntry { get; set; }
+
+	/// <summary>
+	/// Keyvalues to store on the item. You can search and filter by these later.
+	/// </summary>
+	public Dictionary<string, string> KeyValues { get; set; }
+
+	/// <summary>
+	/// Tags to set on the item. You can search and filter by these later.
+	/// </summary>
+	public HashSet<string> Tags { get; set; }
+
+	/// <summary>
+	/// You can store metadata on the item, which is just a string. This can be read when querying items before
+	/// downloading them - so it can be useful for storing extra info you want to store.
+	/// </summary>
+	public string Metadata { get; set; }
+
+	/// <summary>
+	/// The visibility of the item
+	/// </summary>
+	public Storage.Visibility Visibility { get; set; } = Storage.Visibility.Public;
+
+	/// <summary>
+	/// Can the client select the visibility for this item
+	/// </summary>
+	public bool CanSelectVisibility { get; set; } = true;
+
+	/// <summary>
+	/// Called when done. The ulong is the published item id. You can access it via url
+	/// https://steamcommunity.com/sharedfiles/filedetails/?id=######
+	/// </summary>
+	public Action<ulong> OnComplete { get; set; }
+
+	/// <summary>
+	/// If set, update this existing workshop item instead of creating a new one.
+	/// </summary>
+	public ulong PublishedFileId { get; set; }
+
+	/// <summary>
+	/// Defined categories to show in the workshop publish modal
+	/// </summary>
+	public Dictionary<string, SerializedProperty> Categories { get; } = [];
+
+	/// <summary>
+	/// Adds a new category associated with the specified enum type to the collection. 
+	/// The user will be prompted to select one of the enum values when publishing.
+	/// This will be set on the file as keyvalues[name] = enum.ToString()
+	/// </summary>
+	public void AddCategory<TEnum>( string name ) where TEnum : struct, Enum
+	{
+		var t = Game.TypeLibrary.GetEnumDescription( typeof( TEnum ) );
+		if ( t == null )
+			throw new Exception( $"Type {typeof( TEnum ).FullName} is not registered in the TypeLibrary" );
+
+		KeyValues ??= [];
+		var kv = KeyValues;
+		var get = () => kv.TryGetValue( name, out string val ) ? (Enum.TryParse( val, true, out TEnum r ) ? r : default) : default;
+		var set = ( TEnum x ) => { kv[name] = x.ToString(); };
+
+		var prop = Game.TypeLibrary.CreateProperty( name, get, set );
+
+		Categories[name] = prop;
+	}
+}
+
+/// <summary>
+/// Display-ready summary of a single benchmark test, passed to IModalSystem.BenchmarkResults.
+/// </summary>
+public struct BenchmarkTestSummary
+{
+	public string Name { get; set; }
+	public double AvgFps { get; set; }
+	public double AvgFrameTimeMs { get; set; }
+	/// <summary>P99 frame time — time exceeded by 1% of frames.</summary>
+	public double OnePercentLowMs { get; set; }
+	public double AvgGpuFrametimeMs { get; set; }
+	public double Stuttering { get; set; }
+	public double DurationSeconds { get; set; }
+}

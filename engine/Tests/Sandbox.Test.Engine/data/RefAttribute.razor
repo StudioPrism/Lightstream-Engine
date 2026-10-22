@@ -1,0 +1,16 @@
+﻿@namespace TestComponents
+@using System.Diagnostics;
+@using Sandbox.UI;
+
+@if ( ShowFirstElement)
+{
+    <div @ref=MyReferencedElement>@this</div>
+}
+<div @ref=MyReferencedMarkup>markup content</div>
+
+@code 
+{
+    public Panel MyReferencedElement{ get; set; }
+    public Panel MyReferencedMarkup{ get; set; }
+    public bool ShowFirstElement { get; set; } = true;
+}

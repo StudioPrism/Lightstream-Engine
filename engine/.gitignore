@@ -1,0 +1,7 @@
+obj
+bin
+*.user
+launchSettings.json
+*.exe
+*.pdb
+.idea

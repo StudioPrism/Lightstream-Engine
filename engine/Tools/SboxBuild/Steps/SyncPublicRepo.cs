@@ -1,0 +1,913 @@
+using Microsoft.Extensions.FileSystemGlobbing;
+using System.Collections.Concurrent;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using static Facepunch.Constants;
+
+namespace Facepunch.Steps;
+
+internal record ArtifactFileInfo
+{
+	[JsonPropertyName( "path" )]
+	public string Path { get; init; }
+
+	[JsonPropertyName( "sha256" )]
+	public string Sha256 { get; init; }
+
+	[JsonPropertyName( "size" )]
+	public long Size { get; init; }
+}
+
+internal record ArtifactManifest
+{
+	[JsonPropertyName( "commit" )]
+	public string Commit { get; init; }
+
+	[JsonPropertyName( "timestamp" )]
+	public string Timestamp { get; init; }
+
+	[JsonPropertyName( "files" )]
+	public List<ArtifactFileInfo> Files { get; init; }
+}
+
+/// <summary>
+/// Syncs the master branch and tags to the public repository by filtering specific paths
+/// </summary>
+internal class SyncPublicRepo( bool dryRun = false )
+{
+	private const string PUBLIC_REPO = "Facepunch/sbox-public";
+	private const string PUBLIC_BRANCH = "master";
+	private const string SHALLOW_EXCLUDE_TAG = "public-history-root";
+	private const int MAX_PARALLEL_UPLOADS = 32;
+
+	internal ExitCode Run()
+	{
+		try
+		{
+			var success = SyncToPublicRepository();
+			if ( !success )
+			{
+				return ExitCode.Failure;
+			}
+
+			return ExitCode.Success;
+		}
+		catch ( Exception ex )
+		{
+			Log.Error( $"Public repo sync failed with error: {ex}" );
+			return ExitCode.Failure;
+		}
+	}
+
+	private static readonly string[] RepoFilterPathIncludeGlobs =
+	{
+		"engine/**",
+		"game/**",
+		".editorconfig",
+		"public/**"
+	};
+
+	private static readonly string[] RepoFilterPathExcludeGlobs =
+	{
+		"**/*.pdb",
+
+		// Private legacy shader sources, matching depot.game.content.vdf and UploadBuildArtifacts.
+		"game/core/shaders/ambient_cube.fxc",
+		"game/core/shaders/baked_lighting_constants.fxc",
+		"game/core/shaders/bump_strength.fxc",
+		"game/core/shaders/encoded_normals.fxc",
+		"game/core/shaders/ffd.fxc",
+		"game/core/shaders/instancing.fxc",
+		"game/core/shaders/irradiance_probe_lighting.fxc",
+		"game/core/shaders/irradiance_volume.fxc",
+		"game/core/shaders/light_probe_volume.fxc",
+		"game/core/shaders/math_general.fxc",
+		"game/core/shaders/mathlib_base.fxc",
+		"game/core/shaders/morph.fxc",
+		"game/core/shaders/octohedral_encoding.fxc",
+		"game/core/shaders/parallax_occlusion.fxc",
+		"game/core/shaders/pcss.fxc",
+		"game/core/shaders/post_process_common.fxc",
+		"game/core/shaders/quad_overdraw_ps.fxc",
+		"game/core/shaders/sheet_sampling.fxc",
+		"game/core/shaders/sky.fxc",
+		"game/core/shaders/ssbump.fxc",
+		"game/core/shaders/transform_buffer.fxc",
+		"game/core/shaders/volumetric_fog.fxc",
+		"game/core/shaders/vs_decompress.fxc",
+
+		"game/core/shaders/complex.shader",
+		"game/core/shaders/copytexture.shader",
+		"game/core/shaders/cs_compress_dxt5.shader",
+		"game/core/shaders/cs_volumetric_fog.shader",
+		"game/core/shaders/debug_show_texture.shader",
+		"game/core/shaders/debug_wireframe_2d.shader",
+		"game/core/shaders/debugoverlay_wireframe.shader",
+		"game/core/shaders/depth_only.shader",
+		"game/core/shaders/downsample_depth.shader",
+		"game/core/shaders/error.shader",
+		"game/core/shaders/eyeball.shader",
+		"game/core/shaders/generic.shader",
+		"game/core/shaders/morph_composite.shader",
+		"game/core/shaders/simple.shader",
+		"game/core/shaders/skin.shader",
+		"game/core/shaders/sky.shader",
+		"game/core/shaders/static_overlay.shader",
+		"game/core/shaders/tonemap_query.shader",
+		"game/core/shaders/tools_2d_generic.shader",
+		"game/core/shaders/tools_generic.shader",
+		"game/core/shaders/tools_light_probe.shader",
+		"game/core/shaders/tools_selection_outline.shader",
+		"game/core/shaders/tools_selection_overlay.shader",
+		"game/core/shaders/tools_selection_stencil_copy.shader",
+		"game/core/shaders/tools_shading_complexity.shader",
+		"game/core/shaders/tools_solid.shader",
+		"game/core/shaders/tools_sprite.shader",
+		"game/core/shaders/tools_textured_unlit.shader",
+		"game/core/shaders/tools_visualize_collision_mesh.shader",
+		"game/core/shaders/tools_visualize_tangent_frame.shader",
+		"game/core/shaders/tools_wireframe.shader",
+		"game/core/shaders/ui.shader",
+		"game/core/shaders/unlit.shader",
+		"game/core/shaders/visualize_quad_overdraw.shader"
+	};
+
+	private static readonly Dictionary<string, string> RepoFilterPathRenames = new()
+	{
+		{ "public/.gitignore", ".gitignore" },
+		{ "public/.gitattributes", ".gitattributes" },
+		{ "public/.github/PULL_REQUEST_TEMPLATE.md", ".github/PULL_REQUEST_TEMPLATE.md" },
+		{ "public/.github/ISSUE_TEMPLATE/bug_report.yml", ".github/ISSUE_TEMPLATE/bug_report.yml" },
+		{ "public/.github/ISSUE_TEMPLATE/config.yml", ".github/ISSUE_TEMPLATE/config.yml" },
+		{ "public/.github/ISSUE_TEMPLATE/crash.yml", ".github/ISSUE_TEMPLATE/crash.yml" },
+		{ "public/.github/ISSUE_TEMPLATE/feature_request.yml", ".github/ISSUE_TEMPLATE/feature_request.yml" },
+		{ "public/.github/ISSUE_TEMPLATE/whitelist.yml", ".github/ISSUE_TEMPLATE/whitelist.yml" },
+		{ "public/.github/workflows/pull_request.yml", ".github/workflows/pull_request.yml" },
+		{ "public/.github/workflows/pull_request_checks.yml", ".github/workflows/pull_request_checks.yml" },
+		{ "public/.github/workflows/pull_request_formatting.yml", ".github/workflows/pull_request_formatting.yml" },
+		{ "public/README.md", "README.md" },
+		{ "public/AGENTS.md", "AGENTS.md" },
+		{ "public/CLAUDE.md", "CLAUDE.md" },
+		{ "public/LICENSE.md", "LICENSE.md" },
+		{ "public/CONTRIBUTING.md", "CONTRIBUTING.md" },
+		{ "public/SECURITY.md", "SECURITY.md" },
+		{ "public/Setup.bat", "Setup.bat" },
+		{ "public/Setup.sh", "Setup.sh" },
+		{ "public/Bootstrap.bat", "Bootstrap.bat" }
+	};
+
+	private static Matcher RepoFileFilter()
+	{
+		if ( _matcher is not null )
+		{
+			return _matcher;
+		}
+
+		_matcher = new Matcher( StringComparison.OrdinalIgnoreCase );
+
+		_matcher.AddIncludePatterns( RepoFilterPathIncludeGlobs );
+
+		_matcher.AddExcludePatterns( RepoFilterPathExcludeGlobs );
+
+		return _matcher;
+	}
+
+	private static Matcher _matcher = null;
+
+	private bool SyncToPublicRepository()
+	{
+		string remoteBase = null;
+		if ( !dryRun )
+		{
+			remoteBase = GetR2Base();
+			if ( string.IsNullOrEmpty( remoteBase ) )
+			{
+				return false;
+			}
+		}
+		else
+		{
+			Log.Info( "Dry run enabled: skipping R2 uploads and public push" );
+		}
+
+		var repositoryRoot = Path.GetFullPath( "." );
+		var filteredRepoPath = CreateShallowClone( repositoryRoot );
+		if ( string.IsNullOrEmpty( filteredRepoPath ) )
+		{
+			return false;
+		}
+
+		try
+		{
+			var relativeFilteredPath = GetRelativeWorkingDirectory( filteredRepoPath );
+			var uploadedArtifacts = new HashSet<ArtifactFileInfo>();
+			var uploadedArtifactHashes = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
+			var uploadedArtifactPaths = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
+
+			// Upload windows binaries
+			if ( !TryUploadBuildArtifacts( repositoryRoot, remoteBase, "win64", dryRun, ref uploadedArtifacts, uploadedArtifactHashes, uploadedArtifactPaths ) )
+			{
+				return false;
+			}
+
+			// Upload linux binaries
+			if ( !TryUploadBuildArtifacts( repositoryRoot, remoteBase, "linuxsteamrt64", dryRun, ref uploadedArtifacts, uploadedArtifactHashes, uploadedArtifactPaths ) )
+			{
+				return false;
+			}
+
+			// Upload macOS binaries
+			if ( !TryUploadBuildArtifacts( repositoryRoot, remoteBase, "osxarm64", dryRun, ref uploadedArtifacts, uploadedArtifactHashes, uploadedArtifactPaths ) )
+			{
+				return false;
+			}
+
+			//
+			// Start working with the shallow clone
+			//
+
+			// Make certain we dont have any stray files in our shallow clone
+			if ( !CleanIgnoredFiles( relativeFilteredPath ) )
+			{
+				return false;
+			}
+
+			// Upload LFS tracked files in the HEAD of the shallow clone
+			var shallowLfsPaths = GetCurrentLfsFiles( relativeFilteredPath );
+			if ( shallowLfsPaths is null )
+			{
+				return false;
+			}
+
+			if ( !TryUploadLfsArtifacts( filteredRepoPath, shallowLfsPaths, remoteBase, dryRun, ref uploadedArtifacts, uploadedArtifactHashes, uploadedArtifactPaths ) )
+			{
+				return false;
+			}
+
+			// Run git-filter-repo to filter out unwanted paths.
+			// LFS pointer blobs are detected and stripped inline by the Python
+			// filter (blob content inspection) so we no longer need to pass a
+			// pre-computed LFS path list.
+			if ( !RunFilterRepo( relativeFilteredPath ) )
+			{
+				return false;
+			}
+
+			if ( !ValidateFilteredRepository( relativeFilteredPath ) )
+			{
+				return false;
+			}
+
+			var publicCommitHash = dryRun
+				? "000000"
+				: PushToPublicRepository( relativeFilteredPath );
+			if ( string.IsNullOrEmpty( publicCommitHash ) )
+			{
+				return false;
+			}
+
+			if ( dryRun )
+			{
+				var dryRunTotalBytes = CalculateArtifactTotalSize( uploadedArtifacts );
+				Log.Info( $"Dry run filtered repository commit hash: {publicCommitHash}" );
+				Log.Info( $"Dry run: total artifact payload {Utility.FormatSize( dryRunTotalBytes )}" );
+				WriteDryRunOutputs( publicCommitHash, uploadedArtifacts );
+				return true;
+			}
+
+			if ( !UploadManifest( publicCommitHash, uploadedArtifacts, remoteBase ) )
+			{
+				return false;
+			}
+
+			// Also upload a copy of the manifest indexed by the private commit hash.
+			// This lets CI running in the private repo resolve artifacts directly from
+			// its own git history without needing to know the public commit hash.
+			var privateCommitHash = GetPrivateCommitHash();
+			if ( !string.IsNullOrEmpty( privateCommitHash ) &&
+				!string.Equals( privateCommitHash, publicCommitHash, StringComparison.OrdinalIgnoreCase ) )
+			{
+				if ( !UploadManifest( privateCommitHash, uploadedArtifacts, remoteBase ) )
+				{
+					return false;
+				}
+			}
+
+			var manifestTotalBytes = CalculateArtifactTotalSize( uploadedArtifacts );
+			Log.Info( $"Total manifest artifact size: {Utility.FormatSize( manifestTotalBytes )}" );
+
+			return true;
+		}
+		finally
+		{
+			try
+			{
+				Thread.Sleep( 500 ); // Give any pending file handles a moment to close
+				Log.Info( "Cleaning up temporary filtered repository..." );
+				Directory.Delete( filteredRepoPath, true );
+			}
+			catch ( Exception ex )
+			{
+				Log.Warning( $"Failed to clean up temporary directory: {ex.Message}" );
+			}
+		}
+	}
+
+	private static string CreateShallowClone( string repositoryRoot )
+	{
+		var localFilePath = new Uri( repositoryRoot ).AbsoluteUri;
+		var filteredRepoPath = Path.Combine( Path.GetTempPath(), $"sbox-filtered-{Guid.NewGuid()}" );
+
+		Log.Info( "Creating clone for filtering..." );
+
+		if ( Utility.RunProcess( "git", $"clone --config core.longpaths=true --shallow-exclude {SHALLOW_EXCLUDE_TAG} \"{localFilePath}\" \"{filteredRepoPath}\"" ) )
+		{
+			return filteredRepoPath;
+		}
+
+		Log.Error( "Failed to create clone" );
+		return null;
+	}
+
+	private static bool CleanIgnoredFiles( string relativeRepoPath )
+	{
+		Log.Info( "Removing ignored files from filtered repository..." );
+		if ( Utility.RunProcess( "git", "clean -f -x -d", relativeRepoPath ) )
+		{
+			return true;
+		}
+
+		Log.Error( "Failed to remove ignored files from filtered repository" );
+		return false;
+	}
+
+	private static bool TryUploadBuildArtifacts( string repositoryRoot, string remoteBase, string platform, bool skipUpload, ref HashSet<ArtifactFileInfo> artifacts, HashSet<string> uploadedHashes, HashSet<string> uploadedPaths )
+	{
+		var buildArtifactsRoot = Path.Combine( repositoryRoot, "game", "bin", platform );
+		if ( !Directory.Exists( buildArtifactsRoot ) )
+		{
+			Log.Info( $"Build artifacts directory not found, skipping upload: {buildArtifactsRoot}" );
+			return true;
+		}
+
+		// Inline matcher: include everything, exclude managed root folder, pdbs, and debug symbols
+		var matcher = new Matcher( StringComparison.OrdinalIgnoreCase, preserveFilterOrder: true );
+		matcher.AddInclude( "**/*" );
+		matcher.AddExclude( "managed/**" );
+		matcher.AddExclude( "**/*.pdb" );
+		matcher.AddExclude( "**/*.dbg" );
+
+		var filesToUpload = matcher
+			.GetResultsInFullPath( buildArtifactsRoot )
+			.ToHashSet( StringComparer.OrdinalIgnoreCase );
+
+		var compiledAssets = GetCompiledAssetFiles( repositoryRoot );
+		var newCompiledAssets = 0;
+		foreach ( var asset in compiledAssets )
+		{
+			if ( filesToUpload.Add( asset ) )
+			{
+				newCompiledAssets++;
+			}
+		}
+
+		if ( filesToUpload.Count == 0 )
+		{
+			Log.Info( "No build artifacts found to upload" );
+			return true;
+		}
+
+		var compiledAssetSuffix = newCompiledAssets > 0 ? $" (including {newCompiledAssets} compiled asset(s))" : string.Empty;
+		Log.Info( $"Found {filesToUpload.Count} build artifact(s) to upload{compiledAssetSuffix}" );
+
+		var candidates = filesToUpload
+			.Select( path =>
+			{
+				var repoRelativePath = Path.GetRelativePath( repositoryRoot, path );
+				return (RepoPath: ToForwardSlash( repoRelativePath ), AbsolutePath: path);
+			} )
+			.ToList();
+
+		return TryUploadArtifacts( candidates, remoteBase, artifacts, uploadedHashes, uploadedPaths, "build", skipUpload );
+	}
+
+	private static IReadOnlyCollection<string> GetCompiledAssetFiles( string repositoryRoot )
+	{
+		var gameRoot = Path.Combine( repositoryRoot, "game" );
+		if ( !Directory.Exists( gameRoot ) )
+		{
+			return Array.Empty<string>();
+		}
+
+		var searchRoots = new[]
+		{
+			"addons",
+			"core",
+			"config",
+			"editor",
+			"mount",
+			"samples",
+			"templates"
+		};
+
+		var compiledAssets = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
+		foreach ( var directory in searchRoots )
+		{
+			var fullPath = Path.Combine( gameRoot, directory );
+			if ( !Directory.Exists( fullPath ) )
+			{
+				continue;
+			}
+
+			foreach ( var path in Directory.EnumerateFiles( fullPath, "*.*_c", SearchOption.AllDirectories ) )
+			{
+				compiledAssets.Add( Path.GetFullPath( path ) );
+			}
+		}
+
+		return compiledAssets;
+	}
+
+	private static bool TryUploadLfsArtifacts( string repoRoot, IReadOnlyCollection<string> lfsPaths, string remoteBase, bool skipUpload, ref HashSet<ArtifactFileInfo> artifacts, HashSet<string> uploadedHashes, HashSet<string> uploadedPaths )
+	{
+		if ( lfsPaths.Count == 0 )
+		{
+			return true;
+		}
+
+		var candidates = lfsPaths
+			.Where( p => RepoFileFilter().Match( p ).HasMatches )
+			.Select( path => (RepoPath: path, AbsolutePath: Path.Combine( repoRoot, path.Replace( '/', Path.DirectorySeparatorChar ) )) )
+			.ToList();
+
+		return TryUploadArtifacts( candidates, remoteBase, artifacts, uploadedHashes, uploadedPaths, "LFS", skipUpload );
+	}
+
+	private bool RunFilterRepo( string relativeRepoPath )
+	{
+		Log.Info( "Running git-filter-repo to filter paths..." );
+
+		var scriptPath = Path.Combine( Directory.GetCurrentDirectory(), "engine", "Tools", "SboxBuild", "Steps", "SyncPublicRepoFilter.py" );
+		if ( !File.Exists( scriptPath ) )
+		{
+			Log.Error( $"Filter script not found: {scriptPath}" );
+			return false;
+		}
+
+		var config = new FilterConfigData
+		{
+			IncludeGlobs = RepoFilterPathIncludeGlobs,
+			ExcludeGlobs = RepoFilterPathExcludeGlobs,
+			PathRenames = RepoFilterPathRenames.ToDictionary( pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase )
+		};
+
+		string configPath = null;
+		try
+		{
+			configPath = Path.Combine( Path.GetTempPath(), $"sbox-filter-config-{Guid.NewGuid():N}.json" );
+			var configJson = JsonSerializer.Serialize( config );
+			File.WriteAllText( configPath, configJson );
+
+			var pythonExecutable = GetPythonExecutable();
+			var arguments = $"\"{scriptPath}\" --config \"{configPath}\"";
+
+			if ( Utility.RunProcess( pythonExecutable, arguments, relativeRepoPath ) )
+			{
+				return true;
+			}
+
+			Log.Error( "Failed to filter repository" );
+			return false;
+		}
+		finally
+		{
+			if ( configPath is not null && File.Exists( configPath ) )
+			{
+				File.Delete( configPath );
+			}
+		}
+	}
+
+	private static readonly HashSet<string> ForbiddenRepoExtensions = new( StringComparer.OrdinalIgnoreCase )
+	{
+		".lib", ".exe", ".pdb", ".a", ".dll", ".dylib", ".so",
+		".png", ".tga", ".jpg", ".psd", ".pdf", ".bmp", ".gif", ".exr", ".ico", ".svg", ".tif", ".tiff",
+		".ttf", ".otf",
+		".dmx", ".fbx", ".max",
+		".wav", ".ogg", ".mp3", ".mp4", ".webm", ".avi",
+		".pyd", ".ppf", ".vsix", ".vcs", ".bin", ".dat", ".jar", ".spv", ".ma", ".lxo"
+	};
+
+	private static bool ValidateFilteredRepository( string relativeRepoPath )
+	{
+		Log.Info( "Validating filtered repository before push..." );
+
+		var renamedTargets = new HashSet<string>( RepoFilterPathRenames.Values, StringComparer.OrdinalIgnoreCase );
+		var matcher = RepoFileFilter();
+		var violations = new List<string>();
+
+		Utility.RunProcess( "git", "ls-tree -r --name-only HEAD", relativeRepoPath, onDataReceived: ( _, e ) =>
+		{
+			if ( string.IsNullOrWhiteSpace( e.Data ) )
+				return;
+
+			var file = ToForwardSlash( e.Data.Trim() );
+
+			if ( file.StartsWith( "src/", StringComparison.OrdinalIgnoreCase ) )
+				violations.Add( $"Private source code: {file}" );
+
+			if ( !renamedTargets.Contains( file ) && !matcher.Match( file ).HasMatches )
+				violations.Add( $"Outside include rules: {file}" );
+
+			var ext = Path.GetExtension( file );
+			if ( !string.IsNullOrEmpty( ext ) && ForbiddenRepoExtensions.Contains( ext ) )
+				violations.Add( $"Forbidden extension ({ext}): {file}" );
+		} );
+
+		if ( violations.Count > 0 )
+		{
+			Log.Error( $"Filtered repository contains {violations.Count} violation(s):" );
+			foreach ( var v in violations )
+				Log.Error( $"  {v}" );
+			return false;
+		}
+
+		Log.Info( "Filtered repository validation passed" );
+		return true;
+	}
+
+	private string PushToPublicRepository( string relativeRepoPath )
+	{
+		Log.Info( "Pushing filtered branch and tags to public..." );
+
+		var token = Environment.GetEnvironmentVariable( "SYNC_GITHUB_TOKEN" );
+		if ( string.IsNullOrEmpty( token ) )
+		{
+			Log.Error( "SYNC_GITHUB_TOKEN environment variable not set" );
+			return null;
+		}
+
+		var publicUrl = $"https://x-access-token:{token}@github.com/{PUBLIC_REPO}.git";
+		if ( !Utility.RunProcess( "git", $"remote add public \"{publicUrl}\"", relativeRepoPath ) )
+		{
+			Log.Warning( "Failed to add remote (may already exist), attempting to update URL" );
+			if ( !Utility.RunProcess( "git", $"remote set-url public \"{publicUrl}\"", relativeRepoPath ) )
+			{
+				Log.Error( "Failed to configure public remote" );
+				return null;
+			}
+		}
+
+		// git-filter-repo has already rewritten tag targets to their public commits.
+		// Push both lightweight and annotated tags atomically with the branch.
+		if ( !Utility.RunProcess( "git", $"push --atomic public {PUBLIC_BRANCH} --tags", relativeRepoPath ) )
+		{
+			Log.Error( "Failed to push to public repository" );
+			return null;
+		}
+
+		string publicCommitHash = null;
+		if ( !Utility.RunProcess( "git", "rev-parse HEAD", relativeRepoPath, onDataReceived: ( _, e ) =>
+		{
+			if ( !string.IsNullOrWhiteSpace( e.Data ) )
+			{
+				publicCommitHash ??= e.Data.Trim();
+			}
+		} ) )
+		{
+			Log.Error( "Failed to retrieve public commit hash" );
+			return null;
+		}
+
+		if ( string.IsNullOrWhiteSpace( publicCommitHash ) )
+		{
+			Log.Error( "Public commit hash was empty" );
+			return null;
+		}
+
+		Log.Info( $"Public repository commit hash: {publicCommitHash}" );
+
+		return publicCommitHash;
+	}
+
+	/// <summary>
+	/// Returns the HEAD commit hash of the private (current) repository.
+	/// </summary>
+	private static string GetPrivateCommitHash()
+	{
+		string hash = null;
+		Utility.RunProcess( "git", "rev-parse HEAD", onDataReceived: ( _, e ) =>
+		{
+			if ( !string.IsNullOrWhiteSpace( e.Data ) )
+				hash ??= e.Data.Trim();
+		} );
+
+		if ( string.IsNullOrEmpty( hash ) )
+		{
+			Log.Warning( "Failed to resolve private commit hash; private-keyed manifest will not be uploaded." );
+		}
+
+		return hash;
+	}
+
+	private static HashSet<string> GetCurrentLfsFiles( string relativeRepoPath )
+	{
+		var trackedFiles = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
+		if ( !Utility.RunProcess( "git", "lfs ls-files --name-only", relativeRepoPath, onDataReceived: ( _, e ) =>
+		{
+			if ( !string.IsNullOrWhiteSpace( e.Data ) )
+			{
+				trackedFiles.Add( ToForwardSlash( e.Data.Trim() ) );
+			}
+		} ) )
+		{
+			Log.Error( "Failed to list LFS tracked files" );
+			return null;
+		}
+
+		return trackedFiles;
+	}
+
+
+	private void WriteDryRunOutputs( string commitHash, IEnumerable<ArtifactFileInfo> artifacts )
+	{
+		var workingDirectory = Directory.GetCurrentDirectory();
+		var manifestPath = Path.Combine( workingDirectory, "public-sync-manifest.dryrun.json" );
+		var manifest = new ArtifactManifest
+		{
+			Commit = commitHash,
+			Timestamp = DateTime.UtcNow.ToString( "o" ),
+			Files = artifacts is null ? new List<ArtifactFileInfo>() : new List<ArtifactFileInfo>( artifacts )
+		};
+
+		var manifestJson = JsonSerializer.Serialize( manifest, new JsonSerializerOptions { WriteIndented = true } );
+		File.WriteAllText( manifestPath, manifestJson );
+
+		Log.Info( $"Dry run manifest written to {manifestPath}" );
+	}
+
+	// Additional safe guard, stuff we absolutely do not want to upload
+	private static readonly HashSet<string> ForbiddenArtifactExtensions = new( StringComparer.OrdinalIgnoreCase )
+	{
+		".pdb",
+		".cpp",
+		".h"
+	};
+
+	private static bool TryUploadArtifacts( IReadOnlyCollection<(string RepoPath, string AbsolutePath)> candidates, string remoteBase, HashSet<ArtifactFileInfo> artifacts, HashSet<string> uploadedHashes, HashSet<string> uploadedPaths, string artifactLabel, bool skipUpload )
+	{
+		if ( candidates.Count == 0 )
+		{
+			Log.Info( $"No {artifactLabel} artifacts found to upload" );
+			return true;
+		}
+
+		var uniqueUploads = new List<(string AbsolutePath, ArtifactFileInfo Artifact)>();
+		var duplicateManifestCount = 0;
+		var duplicateUploadCount = 0;
+
+		// Pre-compute SHA256 hashes in parallel - hashing is CPU+IO bound and benefits from concurrency
+		var hashCache = new ConcurrentDictionary<string, (string Sha256, long Size)>( StringComparer.OrdinalIgnoreCase );
+		Parallel.ForEach( candidates, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, item =>
+		{
+			var (_, absolutePath) = item;
+			if ( !File.Exists( absolutePath ) )
+				return;
+			var ext = Path.GetExtension( absolutePath );
+			if ( !string.IsNullOrEmpty( ext ) && ForbiddenArtifactExtensions.Contains( ext ) )
+				return;
+
+			var fileInfo = new FileInfo( absolutePath );
+			var resolvedPath = absolutePath;
+			if ( fileInfo.LinkTarget is not null )
+			{
+				var resolved = fileInfo.ResolveLinkTarget( returnFinalTarget: true );
+				if ( resolved?.Exists == true )
+				{
+					resolvedPath = resolved.FullName;
+					fileInfo = new FileInfo( resolvedPath );
+				}
+				else
+				{
+					return; // broken symlink - handled with a warning in the sequential pass below
+				}
+			}
+
+			hashCache[absolutePath] = (Utility.CalculateSha256( resolvedPath ), fileInfo.Length);
+		} );
+
+		foreach ( var (repoPath, absolutePath) in candidates )
+		{
+			var repoPathNormalized = ToForwardSlash( repoPath );
+
+			if ( !File.Exists( absolutePath ) )
+			{
+				Log.Error( $"Artifact not found on disk: {repoPathNormalized}" );
+				return false;
+			}
+
+			var extension = Path.GetExtension( absolutePath );
+			if ( !string.IsNullOrEmpty( extension ) && ForbiddenArtifactExtensions.Contains( extension ) )
+			{
+				Log.Error( $"Encountered forbidden artifact extension ({extension}): {repoPathNormalized}" );
+				return false;
+			}
+
+			if ( !hashCache.TryGetValue( absolutePath, out var cached ) )
+			{
+				// Not in cache - must be a broken symlink (resolved in the parallel pass above)
+				Log.Warning( $"Failed to resolve symlink target for {repoPathNormalized}, skipping artifact" );
+				continue;
+			}
+
+			if ( !uploadedPaths.Add( repoPathNormalized ) )
+			{
+				duplicateManifestCount++;
+				continue;
+			}
+
+			var artifact = new ArtifactFileInfo
+			{
+				Path = repoPathNormalized,
+				Sha256 = cached.Sha256,
+				Size = cached.Size
+			};
+
+			artifacts.Add( artifact );
+
+			if ( !uploadedHashes.Add( cached.Sha256 ) )
+			{
+				duplicateUploadCount++;
+				continue;
+			}
+
+			uniqueUploads.Add( (absolutePath, artifact) );
+		}
+
+		if ( uniqueUploads.Count == 0 )
+		{
+			Log.Info( $"No unique {artifactLabel} artifacts to upload" );
+			return true;
+		}
+
+		long batchBytes = 0;
+		foreach ( var upload in uniqueUploads )
+		{
+			batchBytes += upload.Artifact.Size;
+		}
+
+		if ( skipUpload )
+		{
+			Log.Info( $"Dry run: {uniqueUploads.Count} unique {artifactLabel} artifacts ({Utility.FormatSize( batchBytes )})" );
+			return true;
+		}
+
+		Log.Info( $"Uploading {uniqueUploads.Count} {artifactLabel} artifacts ({Utility.FormatSize( batchBytes )})..." );
+
+		if ( !BatchUploadArtifacts( uniqueUploads, remoteBase, artifactLabel ) )
+		{
+			return false;
+		}
+
+		Log.Info( $"Uploaded {uniqueUploads.Count} {artifactLabel} artifacts ({Utility.FormatSize( batchBytes )})" );
+
+		return true;
+	}
+
+	private static bool BatchUploadArtifacts( IReadOnlyCollection<(string AbsolutePath, ArtifactFileInfo Artifact)> uploads, string remoteBase, string artifactLabel )
+	{
+		var stagingDir = Path.Combine( Path.GetTempPath(), $"sbox-upload-{Guid.NewGuid():N}" );
+		Directory.CreateDirectory( stagingDir );
+
+		Log.Info( $"Staging {uploads.Count} {artifactLabel} artifact(s) for batch upload..." );
+
+		try
+		{
+			foreach ( var (absolutePath, artifact) in uploads )
+			{
+				var destPath = Path.Combine( stagingDir, artifact.Sha256 );
+				File.Copy( absolutePath, destPath, overwrite: true );
+			}
+
+			var remoteArtifactsPath = $"{remoteBase}/artifacts";
+			var args = $"copy \"{stagingDir}\" \"{remoteArtifactsPath}\" --ignore-existing --transfers {MAX_PARALLEL_UPLOADS} --checkers {MAX_PARALLEL_UPLOADS} -q";
+			if ( !Utility.RunProcess( "rclone", args, timeoutMs: 3600000 ) )
+			{
+				Log.Error( $"Failed to batch upload {artifactLabel} artifacts" );
+				return false;
+			}
+
+			return true;
+		}
+		finally
+		{
+			try
+			{
+				Directory.Delete( stagingDir, true );
+			}
+			catch ( Exception ex )
+			{
+				Log.Warning( $"Failed to clean up upload staging directory: {ex.Message}" );
+			}
+		}
+	}
+
+	private static bool UploadManifest( string commitHash, IEnumerable<ArtifactFileInfo> artifacts, string remoteBase )
+	{
+		var files = artifacts is null ? new List<ArtifactFileInfo>() : new List<ArtifactFileInfo>( artifacts );
+		var manifest = new ArtifactManifest
+		{
+			Commit = commitHash,
+			Timestamp = DateTime.UtcNow.ToString( "o" ),
+			Files = files
+		};
+
+		var manifestJson = JsonSerializer.Serialize( manifest, new JsonSerializerOptions { WriteIndented = true } );
+
+		var manifestPath = Path.Combine( Path.GetTempPath(), $"{commitHash}.json" );
+		File.WriteAllText( manifestPath, manifestJson );
+
+		try
+		{
+			Log.Info( $"Uploading manifest: {commitHash}.json with {manifest.Files.Count} files" );
+			var remotePath = $"{remoteBase}/manifests/{commitHash}.json";
+			if ( !Utility.RunProcess( "rclone", $"copyto \"{manifestPath}\" \"{remotePath}\"", timeoutMs: 60000 ) )
+			{
+				Log.Error( "Failed to upload manifest file" );
+				return false;
+			}
+		}
+		finally
+		{
+			if ( File.Exists( manifestPath ) )
+			{
+				File.Delete( manifestPath );
+			}
+		}
+
+		return true;
+	}
+
+	private static long CalculateArtifactTotalSize( IEnumerable<ArtifactFileInfo> artifacts )
+	{
+		if ( artifacts is null )
+		{
+			return 0;
+		}
+
+		long total = 0;
+		foreach ( var artifact in artifacts )
+		{
+			if ( artifact is null )
+			{
+				continue;
+			}
+
+			total += artifact.Size;
+		}
+
+		return total;
+	}
+
+	private static string GetRelativeWorkingDirectory( string absolutePath )
+	{
+		var repoRoot = Directory.GetCurrentDirectory();
+		var relativePath = Path.GetRelativePath( repoRoot, absolutePath );
+		return string.IsNullOrEmpty( relativePath ) ? "." : relativePath;
+	}
+
+	private static string GetR2Base() => R2.GetRcloneRemote();
+
+	private static string ToForwardSlash( string path )
+	{
+		return path.Replace( '\\', '/' );
+	}
+
+	private static string GetPythonExecutable()
+	{
+		var overridePath = Environment.GetEnvironmentVariable( "PYTHON" );
+		if ( !string.IsNullOrWhiteSpace( overridePath ) )
+		{
+			return overridePath;
+		}
+
+		if ( OperatingSystem.IsWindows() )
+		{
+			return "python";
+		}
+
+		return "python3";
+	}
+
+	private sealed class FilterConfigData
+	{
+		[JsonPropertyName( "include_globs" )]
+		public string[] IncludeGlobs { get; init; }
+
+		[JsonPropertyName( "exclude_globs" )]
+		public string[] ExcludeGlobs { get; init; }
+
+		[JsonPropertyName( "path_renames" )]
+		public Dictionary<string, string> PathRenames { get; init; }
+	}
+}

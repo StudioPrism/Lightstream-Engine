@@ -1,0 +1,22 @@
+{
+	"UI": false,
+	"Volume": 1,
+	"VolumeRandom": 0,
+	"Pitch": 1,
+	"PitchRandom": 0,
+	"Decibels": 95,
+	"Sounds":
+	[
+		"sounds/ambience/stings/sting-crow-1.vsnd",
+		"sounds/ambience/stings/sting-crow-2.vsnd",
+		"sounds/ambience/stings/sting-crow-3.vsnd",
+		"sounds/ambience/stings/sting-crow-4.vsnd",
+		"sounds/ambience/stings/sting-crow-5.vsnd",
+		"sounds/ambience/stings/sting-crow-6.vsnd",
+		"sounds/ambience/stings/sting-crow-7.vsnd",
+		"sounds/ambience/stings/sting-crow-8.vsnd"
+	],
+	"SelectionMode": "Random",
+	"MaximumDistance": 2080,
+	"MinimumDistance": 104
+}

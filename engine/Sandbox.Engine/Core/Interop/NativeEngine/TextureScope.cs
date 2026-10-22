@@ -1,0 +1,16 @@
+﻿namespace NativeEngine
+{
+	internal enum TextureScope : int
+	{
+		TEXTURE_SCOPE_INVALID = -1,
+
+		TEXTURE_SCOPE_GLOBAL = 0,
+		TEXTURE_SCOPE_DEFAULT = TEXTURE_SCOPE_GLOBAL,
+
+		TEXTURE_SCOPE_PER_FRAME,
+
+		TEXTURE_SCOPE_PER_CONTEXT,
+
+		TEXTURE_SCOPE_COUNT
+	}
+}

@@ -1,0 +1,107 @@
+﻿@namespace MenuProject.Modals
+@inherits MenuProject.Modals.BaseModal
+@using Sandbox;
+@using Sandbox.UI;
+@using SboxMenu;
+@using System;
+@using Sandbox.Network
+@using MenuProject.Modals.MapModalComponents;
+@using MenuProject.Modals.PackageModalComponents;
+@attribute [StyleSheet("/Modals/PackageModals/BasePackageModal.razor.scss")]
+
+<root>
+
+    <MegaCard>
+        <Metrics>
+            @* Just report - rating's along the bottom now, the rest is in the info column *@
+            <PackageMetrics Package="@Package" ShowRatings="@false" ShowStats="@false" />
+        </Metrics>
+        <Tabs>
+            @* A game's tabs - the Overview's the gallery and the map's own write-up *@
+            <PackageTabs @ref=MapTabs Package=@Package Portal=@Portal>
+                <Overview>
+                    <Media Package=@Package Loaded=@HasFullPackage></Media>
+                    <PackageDescription Package=@Package />
+                </Overview>
+            </PackageTabs>
+        </Tabs>
+        <Left>
+            <PackageInfoPanel Package="@Package" OnChangelogClicked="@(() => MapTabs?.OpenChanges())" OnReviewsClicked="@(() => MapTabs?.OpenReviews())" />
+
+            @if (achList is not null)
+            {
+                <PortalButton Portal=@Portal>
+                    <Button>
+                        <Card class="achievements-card">
+                            <ChildContent>
+                                <Label class="section-label">#menu.games.achievements</Label>
+                                <PackageAchievementSummary Package="@Package" />
+                            </ChildContent>
+                        </Card>
+                    </Button>
+                    <Content>
+                        <AchievementList Package="@Package"></AchievementList>
+                    </Content>
+                </PortalButton>
+            }
+
+        </Left>
+
+        <Content><PortalTarget @ref=Portal></PortalTarget></Content>
+
+        <Footer>
+            <ActionBar Modal="@this" Package="@Package"></ActionBar>
+        </Footer>
+    </MegaCard>
+
+</root>
+
+@code
+{
+    public Package Package;
+    public string PackageIdent { get; set; }
+    public bool HasFullPackage { get; set; }
+
+    AchievementCollection achList;
+    PortalTarget Portal = default;
+    PackageTabs MapTabs = default;
+
+	public List<LobbyInformation> Lobbies = new();
+
+	async Task RefreshLobbies()
+	{
+		var filters = new Dictionary<string, string> { { "map", Package.FullIdent } };
+		
+		Lobbies = await Networking.QueryLobbies( filters );
+		
+		StateHasChanged();
+	}
+
+	void OnLobbySelected ( LobbyInformation lobby )
+	{
+        MenuUtility.Connect( lobby.LobbyId );
+		CloseModal(true);
+		OrganizationModal.LastOpened?.CloseModal( true );
+	}
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (PackageIdent is null)
+            return;
+
+        // Get whatever package info we have
+        Package.TryGetCached(PackageIdent, out Package, true);
+
+        // Get Full Package info
+        Package = await Package.FetchAsync(PackageIdent, false);
+        HasFullPackage = true;
+
+        achList = await Package.GetAchievements();
+        if (!achList.All.Any()) achList = default;
+        if (achList is not null) StateHasChanged();
+
+        await RefreshLobbies();
+    }
+
+    protected override int BuildHash() => System.HashCode.Combine(Package);
+}

@@ -1,0 +1,21 @@
+﻿@using MenuProject.MenuUI.Components.Multiplayer
+@using Sandbox.Modals
+@using Sandbox
+@using Sandbox.Network
+
+@namespace MenuProject.Modals
+@inherits MenuProject.Modals.BaseModal
+
+<root>
+	<ServerList class="inner" Config=@Config/>
+</root>
+
+@code
+{
+    ServerListConfig Config;
+
+    public ServerListModal( ServerListConfig config )
+    {
+        Config = config;
+    }
+}

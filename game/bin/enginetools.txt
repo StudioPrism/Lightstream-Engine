@@ -1,0 +1,220 @@
+<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:generic:version{7412167c-06e9-4698-aff2-e63eb59037e7} -->
+{
+	m_EngineTools = 
+	[
+		{
+			m_Name = "hammer"
+			m_FriendlyName = "Hammer (Map Editor)"
+			m_Library = "tools/hammer.dll"
+			m_ToolIcon = "toolimages:hammer/appicon.ico"
+			m_SecondaryAssetTypes = 
+			[
+				"map_asset",
+			]
+		},
+		{
+			m_Name = "met"
+			m_FriendlyName = "Material Editor"
+			m_Library = "tools/met.dll"
+			m_ToolIcon = "toolimages:met/appicon.ico"
+			m_PrimaryAssetTypes = 
+			[
+				"material_asset",
+			]
+		},
+		{
+			m_Name = "modeldoc_editor"
+			m_FriendlyName = "ModelDoc Editor"
+			m_Library = "tools/modeldoc_editor.dll"
+			m_ToolIcon = "toolimages:modeldoc_editor/appicon.ico"
+			m_PrimaryAssetTypes = 
+			[
+				"modeldoc_template_asset",
+				"modeldoc_prefab_asset",
+				"model_asset",
+			]
+		},
+		{
+			m_Name = "animgraph_editor"
+			m_FriendlyName = "AnimGraph Editor"
+			m_Library = "tools/animgraph_editor.dll"
+			m_ToolIcon = "toolimages:animgraph_editor/appicon.ico"
+			m_PrimaryAssetTypes = 
+			[
+				"anim_graph"
+			]
+		}
+	]
+	//////////////////////////////////////////////////////////////////
+	// External Tools:
+	//		%f = full path to file
+	//		%d = file working directory
+	//		%n = file name (no extension)
+	//		%g = game directory (eg. "D:\dev\source2\game")
+	//		%c = content directory (eg. "D:\dev\source2\content")
+	//		%l = text line number if appropriate
+	//		%u = text column number if appropriate
+	//		%1 = Expand using m_Replace1, can use @<Registry Key>
+	//		%2 = ...
+	//////////////////////////////////////////////////////////////////
+	m_ExternalTools = 
+	[
+		{
+			m_Name = "photoshop_tool"
+			m_FriendlyName = "Photoshop"
+			m_Overrides = "photoshop"
+			m_Replace = 
+			[
+				"@HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Photoshop.exe",
+			]
+			m_Command = "%1 \"%f\""
+			m_WorkingDir = "%d"
+			m_bWaitForFinish = "0"
+			m_SupportedExts = 
+			[
+				"psd",
+				"tga",
+				"pfm",
+				"tif",
+			]
+			m_bIsPrimaryTool = true
+		},
+		{
+			m_Name = "notepad_tool"
+			m_FriendlyName = "Notepad"
+			m_Overrides = "notepad"
+			m_Command = "notepad \"%f\""
+			m_WorkingDir = "%d"
+			m_bWaitForFinish = "0"
+			m_SupportedExts = 
+			[
+				"vmdl",
+				"vagrp",
+				"attach",
+				"boneflags",
+				"constraint",
+				"hitboxes",
+				"skeleton",
+				"collision",
+				"css",
+				"xml",
+				"vpdi",
+			]
+			m_bIsPrimaryTool = true
+		},
+		{
+			m_Name = "sublime_text_tool"
+			m_FriendlyName = "Sublime Text"
+			m_Overrides = "sublime_text"
+			m_Replace = 
+			[
+				"@HKEY_CLASSES_ROOT\\Applications\\sublime_text.exe\\shell\\open\\command",
+			]
+			m_Command = "%1 \"%f\""
+			m_CommandWithLineColumn = "%1 \"%f:%l:%u\""
+			m_WorkingDir = "%d"
+			m_bWaitForFinish = "0"
+			m_SupportedExts = 
+			[
+				"vmdl",
+				"vagrp",
+				"attach",
+				"boneflags",
+				"constraint",
+				"hitboxes",
+				"skeleton",
+				"collision",
+				"css",
+				"xml",
+				"vpdi",
+			]
+			m_bIsPrimaryTool = true
+		},
+		{
+			m_Name = "code_tool"
+			m_FriendlyName = "Visual Studio Code"
+			m_Overrides = "code"
+			m_Replace = 
+			[
+				"@HKEY_CLASSES_ROOT\\Applications\\Code.exe\\shell\\open\\command",
+			]
+			m_Command = "%1 \"%f\""
+			m_CommandWithLineColumn = "%1 --goto \"%f:%l:%u\""
+			m_WorkingDir = "%d"
+			m_bWaitForFinish = "0"
+			m_SupportedExts = 
+			[
+				"vmdl",
+				"vagrp",
+				"attach",
+				"boneflags",
+				"constraint",
+				"hitboxes",
+				"skeleton",
+				"collision",
+				"css",
+				"xml",
+				"vpdi",
+			]
+			m_bIsPrimaryTool = true
+		},
+		{
+			m_Name = "devenv_tool"
+			m_FriendlyName = "Visual Studio"
+			m_Overrides = "devenv"
+			m_Replace = 
+			[
+				"@HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\devenv.exe",
+			]
+			m_Command = "%1 /edit \"%f\""
+			m_CommandWithLineColumn = "%1 /edit \"%f\" /command \"edit.goto %l\""
+			m_WorkingDir = "%d"
+			m_bWaitForFinish = "0"
+			m_SupportedExts = 
+			[
+				"vmdl",
+				"vagrp",
+				"attach",
+				"boneflags",
+				"constraint",
+				"hitboxes",
+				"skeleton",
+				"collision",
+				"css",
+				"xml",
+				"vpdi",
+			]
+			m_bIsPrimaryTool = true
+		},
+		{
+			m_Name = "notepad++_tool"
+			m_FriendlyName = "Notepad++"
+			m_Overrides = "notepad++"
+			m_Replace = 
+			[
+				"@HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\notepad++.exe",
+			]
+			m_Command = "%1 \"%f\""
+			m_CommandWithLineColumn = "%1 -n%l -c%u \"%f\""
+			m_WorkingDir = "%d"
+			m_bWaitForFinish = "0"
+			m_SupportedExts = 
+			[
+				"vmdl",
+				"vagrp",
+				"attach",
+				"boneflags",
+				"constraint",
+				"hitboxes",
+				"skeleton",
+				"collision",
+				"css",
+				"xml",
+				"vpdi",
+			]
+			m_bIsPrimaryTool = true
+		},
+
+
+	]
+}

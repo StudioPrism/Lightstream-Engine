@@ -1,0 +1,46 @@
+{
+  "HasHumanSkin": false,
+  "HumanSkinModel": null,
+  "HumanSkinMaterial": null,
+  "HumanEyesMaterial": null,
+  "HumanSkinBodyGroups": 0,
+  "HumanSkinMaterialGroup": null,
+  "HumanSkinTags": null,
+  "Title": "Boot Heels Brown",
+  "Subtitle": null,
+  "Category": "Heels",
+  "ConditionalModels": {},
+  "Tags": null,
+  "Model": "models/citizen_clothes/shoes/boot_heels/models/boot_heels_brown.vmdl",
+  "HumanAltModel": "models/citizen_clothes/shoes/boot_heels/models/boot_heels_brown_f_human.vmdl",
+  "HumanAltFemaleModel": "models/citizen_clothes/shoes/boot_heels/models/boot_heels_brown_f_human.vmdl",
+  "SkinMaterial": null,
+  "EyesMaterial": null,
+  "MaterialGroup": null,
+  "HeelHeight": 1,
+  "SlotsUnder": "LeftFoot, RightFoot",
+  "SlotsOver": 0,
+  "HideBody": "Feet",
+  "DeformationMode": "Normal",
+  "AllowTintSelect": false,
+  "TintSelection": {
+    "blend": "Linear",
+    "color": [
+      {
+        "t": 0.5,
+        "c": "1,1,1,1"
+      }
+    ],
+    "alpha": []
+  },
+  "TintDefault": 0.5,
+  "SteamItemDefinitionId": null,
+  "Icon": {
+    "Path": "models/citizen_clothes/shoes/boot_heels/boot_heels_brown.clothing.png",
+    "Mode": "Foot",
+    "UsePositionOffset": false,
+    "PositionOffset": "13.4999905,1.09999895,1.79999995"
+  },
+  "__references": [],
+  "__version": 0
+}

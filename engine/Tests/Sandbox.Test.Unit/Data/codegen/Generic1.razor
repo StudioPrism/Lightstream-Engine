@@ -1,0 +1,16 @@
+﻿@typeparam T1
+@namespace Sandbox.Test.Generated
+@using Sandbox.UI
+@attribute [StyleSheet( "mystylesheet.scss" )]
+
+<div></div>
+
+@* Attempt to create a ListComponnet<string> *@
+
+<ListComponent T="string" Data="@Data"></ListComponent>
+
+@code
+{
+    T1 Data { get; set; }
+    List<T1> Items { get; set; }
+}

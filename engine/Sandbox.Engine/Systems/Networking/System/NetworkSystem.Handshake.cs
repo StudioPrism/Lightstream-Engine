@@ -1,0 +1,519 @@
+﻿using Sandbox.Engine;
+
+namespace Sandbox.Network;
+
+/// <summary>
+/// A network system is a bunch of connections that people can send messages 
+/// over. Right now it can be a dedicated server, a listen server, a pure client,
+/// or a p2p system.
+/// </summary>
+internal partial class NetworkSystem
+{
+	void InstallHandshakeMessages()
+	{
+		AddHandler<ServerInfo>( On_Handshake_ServerInfo );
+		AddHandler<UserInfo>( On_Handshake_ClientInfo );
+		AddHandler<Welcome>( On_Handshake_Welcome );
+		AddHandler<RequestInitialSnapshot>( On_Handshake_RequestSnapshot );
+		AddHandler<InitialSnapshotResponse>( On_Handshake_Snapshot );
+		AddHandler<MountedVPKsResponse>( On_Handshake_MountedVPKs );
+		AddHandler<RequestMountedVPKs>( On_Handshake_RequestMountedVPKs );
+		AddHandler<ClientReady>( On_Handshake_ClientReady );
+		AddHandler<Activate>( On_Handshake_Activate );
+		AddHandler<RestartHandshakeMsg>( On_Handshake_Restart );
+		AddHandler<KickMsg>( On_Kick );
+	}
+
+	/// <summary>
+	/// Server says hello to the client. It tells the client some basic information about itself.
+	/// The client can determine here whether they still want to join or not.
+	/// </summary>
+	async Task On_Handshake_ServerInfo( ServerInfo msg, Connection source, Guid msgId )
+	{
+		if ( !source.IsHost )
+			return;
+
+		IsDeveloperHost = msg.IsDeveloperHost;
+		IsHostMigrationEnabled = msg.HostMigration;
+
+		source.UpdateFrom( msg.Host );
+		source.State = Connection.ChannelState.LoadingServerInformation;
+
+		Connection.Local = new LocalConnection( msg.Assigned.Id )
+		{
+			HandshakeId = msg.HandshakeId,
+			State = Connection.ChannelState.LoadingServerInformation
+		};
+
+		//
+		// Tell the server all about ourselves
+		//
+		var output = UserInfo.Local;
+
+		if ( !source.OnReceiveServerInfo( ref output, msg ) )
+		{
+			return;
+		}
+
+		log.Trace( $"Server Id is {source.Id}" );
+		log.Trace( $"Map is {msg.MapName} ({msg.Map})" );
+		log.Trace( $"Server Name is {msg.ServerName}" );
+		log.Trace( $"Engine version is {msg.EngineVersion}" );
+		log.Trace( $"Game Package is {msg.GamePackage}" );
+		log.Trace( $"My Client ID is {Connection.Local.Id}" );
+
+		// This is a bit of a mess, it needs a good cleaning up. If they have a menu package, then load it first.
+		if ( !string.IsNullOrEmpty( msg.GamePackage ) )
+		{
+			LoadingScreen.Title = $"Loading {msg.GamePackage}";
+
+			log.Trace( $"Loading menu package.. {msg.GamePackage}" );
+
+			var flags = GameLoadingFlags.Remote | GameLoadingFlags.Reload;
+			if ( IsDeveloperHost ) flags |= GameLoadingFlags.Developer;
+
+			if ( !Application.IsStandalone )
+			{
+				LaunchArguments.Map = msg.Map;
+
+				bool success = await IGameInstanceDll.Current.LoadGamePackageAsync( msg.GamePackage, flags, default );
+				if ( !success )
+				{
+					// Failed to load the game package, we can't continue
+					Networking.Disconnect();
+					return;
+				}
+			}
+		}
+		else
+		{
+			log.Trace( $"No game package - must be a developer" );
+		}
+
+		if ( IGameInstanceDll.Current is not null )
+		{
+			// TypeLibrary was probably rebuilt, keep it up to date
+			TypeLibrary = IGameInstanceDll.Current.TypeLibrary;
+		}
+
+		foreach ( var (k, v) in msg.ServerData )
+		{
+			Networking.SetData( k, v );
+		}
+
+		Networking.MaxPlayers = msg.MaxPlayers;
+		Networking.ServerName = msg.ServerName;
+		Networking.MapName = msg.MapName;
+
+		//
+		// Check any required mount for this map
+		//
+		if ( Mounting.MountUtility.TryParse( msg.Map, out string ident ) )
+		{
+			// make sure the mount exists and is mounted
+			var mount = Mounting.Directory.Get( ident );
+			if ( mount is null || !mount.IsInstalled )
+			{
+				IGameInstanceDll.Current.Disconnect( $"Mount is not available: {ident}" );
+				Networking.Disconnect();
+				return;
+			}
+
+			LoadingScreen.Title = $"Mounting {mount.Title}";
+			await Mounting.Directory.Mount( ident );
+
+			// load the scene now so that it's ready by the time we get to snapshot
+			// which may/will reference procedural resources and could be out of order from the MapInstance doing it's thing (woof)
+			var scenefile = SceneFile.Load( msg.MapName );
+			if ( scenefile is null )
+			{
+				IGameInstanceDll.Current.Disconnect( $"Map not found: {msg.MapName}" );
+				Networking.Disconnect();
+				return;
+			}
+		}
+
+		//
+		// Tell me what I need
+		//
+		LoadingScreen.Title = "Fetching Server Data";
+
+		InstallStringTables();
+		log.Trace( $"Fetching Server Data.." );
+
+		source.SendMessage( output with
+		{
+			HandshakeId = msg.HandshakeId
+		} );
+	}
+
+	async Task On_Handshake_ClientInfo( UserInfo msg, Connection source, Guid msgId )
+	{
+		// Only the host lets people in. A peer would check them against rules it doesn't have.
+		if ( !IsHost || source.IsHost )
+			return;
+
+		if ( msg.HandshakeId != source.HandshakeId )
+			return;
+
+		if ( source.State != Connection.ChannelState.LoadingServerInformation )
+		{
+			source.Kick( $"Invalid Handshake State {source.State}" );
+			Log.Info( $"Kicking {source.Name} [{source.SteamId}] Invalid Handshake State {source.State}" );
+			return;
+		}
+
+		if ( !await source.OnReceiveUserInfo( msg ) )
+			return;
+
+		//
+		// Lobbies and steam network connections are trusted, so we can take the Steam Id from them,
+		// we shouldn't trust any other type of connection... but local TCP we can let slide.
+		//
+		if ( source is SteamLobbyConnection slob )
+		{
+			msg.SteamId = slob.Friend.Id;
+		}
+
+		source.PreInfo = new ConnectionInfo( null )
+		{
+			ConnectionId = source.Id,
+			State = source.State
+		};
+
+		source.PreInfo.Update( msg );
+
+		Log.Info( $"{msg.Name} [{msg.SteamId}] is connecting" );
+
+		//
+		// Private and friends-only lobbies. Steam lets anyone with the lobby id join it, so this is
+		// the only thing keeping people out. Only lobby connections have a Steam Id we can trust; the
+		// rest are loopback (local instances), or a dedicated server's, which this doesn't cover.
+		//
+		if ( !Application.IsDedicatedServer && source is SteamLobbyConnection )
+		{
+			if ( !Access.CanJoin( msg.SteamId, out var privacyDenial ) )
+			{
+				Log.Info( $"Kicked {msg.Name} [{msg.SteamId}] - not allowed into this {Access.Privacy} lobby" );
+				source.Kick( privacyDenial );
+				return;
+			}
+		}
+
+		var denialReason = "";
+
+		if ( GameSystem is not null && !GameSystem.AcceptConnection( source, ref denialReason ) )
+		{
+			Log.Info( $"Kicking {msg.Name} [{msg.SteamId}] - {denialReason}" );
+			source.Kick( denialReason );
+			return;
+		}
+
+		// They're in, so they can come back - even after the host has changed
+		if ( source is SteamLobbyConnection )
+		{
+			Access.Admit( msg.SteamId );
+		}
+
+		source.PreInfo = null;
+		source.State = Connection.ChannelState.Welcome;
+
+		//log.Info( $"Client SteamId is {data.SteamId}" );
+		//log.Info( $"Client EngineVersion is {data.EngineVersion}" );
+
+		var output = new Welcome();
+		output.HandshakeId = msg.HandshakeId;
+
+		foreach ( var table in tables )
+		{
+			table.SendSnapshot( source );
+		}
+
+		//
+		// They're connected now dummy
+		//
+		msg.ConnectionTime = DateTime.UtcNow;
+
+		//
+		// Add player info to the manager. This will get sent to all the other players, so this
+		// player is part of the game now.
+		//
+		{
+			AddConnection( source, msg );
+		}
+
+		//
+		// Tell game this guy has connected. This happens after ConnectionInfo so that
+		// everyone can look up their name etc.
+		//
+		GameSystem?.OnConnected( source );
+
+		source.SendMessage( output );
+	}
+
+	async Task On_Handshake_Welcome( Welcome msg, Connection source, Guid msgId )
+	{
+		if ( !source.IsHost )
+			return;
+
+		if ( Connection.Local is null )
+			throw new UnauthorizedAccessException();
+
+		if ( msg.HandshakeId != Connection.Local.HandshakeId )
+			return;
+
+		if ( Connection.Local.State != Connection.ChannelState.LoadingServerInformation )
+			throw new UnauthorizedAccessException();
+
+		Connection.Local.State = Connection.ChannelState.Welcome;
+
+		log.Trace( "Welcome!" );
+
+		LoadingScreen.Title = "Loading Network Tables";
+		if ( !await IGameInstanceDll.Current?.LoadNetworkTables( this ) )
+		{
+			// code archive compile failed or something
+			Networking.Disconnect();
+			return;
+		}
+
+		LoadingScreen.Title = "Init Game System";
+		await InitializeGameSystemAsync();
+
+		log.Trace( $"Game Network System: {GameSystem}" );
+
+		//
+		// Here would be a goodish place to send a bunch of CRC's of the loaded state, so
+		// the server can compare and reject if we're loading assemblies wrong (cheater)
+		//
+		LoadingScreen.Title = "Fetching Snapshot";
+
+		var output = new RequestMountedVPKs { HandshakeId = msg.HandshakeId };
+		source.SendMessage( output );
+	}
+
+	Task On_Handshake_RequestMountedVPKs( RequestMountedVPKs msg, Connection source, Guid msgId )
+	{
+		if ( !IsHost || source.IsHost )
+			return Task.CompletedTask;
+
+		if ( msg.HandshakeId != source.HandshakeId )
+			return Task.CompletedTask;
+
+		if ( source.State != Connection.ChannelState.Welcome )
+		{
+			source.Kick( $"Invalid Handshake State {source.State}" );
+			Log.Info( $"Kicking {source.Name} [{source.SteamId}] Invalid Handshake State {source.State}" );
+			return Task.CompletedTask;
+		}
+
+		var output = new MountedVPKsResponse { HandshakeId = msg.HandshakeId };
+
+		GameSystem?.GetMountedVPKs( source, ref output );
+
+		source.State = Connection.ChannelState.MountVPKs;
+		source.SendMessage( output );
+
+		return Task.CompletedTask;
+	}
+
+	async Task On_Handshake_MountedVPKs( MountedVPKsResponse msg, Connection source, Guid msgId )
+	{
+		if ( !source.IsHost )
+			return;
+
+		if ( Connection.Local is null )
+			throw new UnauthorizedAccessException();
+
+		if ( msg.HandshakeId != Connection.Local.HandshakeId )
+			return;
+
+		if ( Connection.Local.State != Connection.ChannelState.Welcome )
+			throw new UnauthorizedAccessException();
+
+		Connection.Local.State = Connection.ChannelState.MountVPKs;
+
+		await GameSystem?.MountVPKs( source, msg );
+
+		var userInfo = UserInfo.Local;
+		var output = new RequestInitialSnapshot();
+
+		output.HandshakeId = msg.HandshakeId;
+		output.UserData = userInfo.UserData;
+
+		source.SendMessage( output );
+	}
+
+	Task On_Handshake_RequestSnapshot( RequestInitialSnapshot msg, Connection source, Guid msgId )
+	{
+		if ( !IsHost || source.IsHost )
+			return Task.CompletedTask;
+
+		if ( msg.HandshakeId != source.HandshakeId )
+			return Task.CompletedTask;
+
+		if ( source.State != Connection.ChannelState.MountVPKs )
+		{
+			source.Kick( $"Invalid Handshake State {source.State}" );
+			Log.Info( $"Kicking {source.Name} [{source.SteamId}] Invalid Handshake State {source.State}" );
+			return Task.CompletedTask;
+		}
+
+		if ( msg.UserData is not null )
+		{
+			source.UpdateUserData( msg.UserData );
+		}
+
+		source.State = Connection.ChannelState.Snapshot;
+
+		log.Trace( $"[{this}] Requesting a snapshot" );
+
+		var handshakeId = source.HandshakeId;
+		if ( GameSystem is not null )
+		{
+			GameSystem.SendSnapshot( source, snapshot => new InitialSnapshotResponse { HandshakeId = handshakeId, Snapshot = snapshot } );
+		}
+		else
+		{
+			source.SendMessage( new InitialSnapshotResponse { HandshakeId = handshakeId, Snapshot = SnapshotMsg.Create() } );
+		}
+		return Task.CompletedTask;
+	}
+
+	async Task On_Handshake_Snapshot( InitialSnapshotResponse msg, Connection source, Guid msgId )
+	{
+		NetworkDebugSystem.Current?.Record( NetworkDebugSystem.MessageType.Snapshot, msg );
+
+		if ( !source.IsHost )
+			return;
+
+		if ( Connection.Local is null )
+			throw new UnauthorizedAccessException();
+
+		if ( msg.HandshakeId != Connection.Local.HandshakeId )
+			return;
+
+		if ( Connection.Local.State != Connection.ChannelState.MountVPKs )
+			throw new UnauthorizedAccessException();
+
+		Connection.Local.State = Connection.ChannelState.Snapshot;
+
+		LoadingScreen.Title = "Loading Snapshot";
+		Log.Trace( $"[{this}] Got a snapshot" );
+
+		//
+		// Spawn the scene, which could also lead to calling OnStart, OnEnable on components
+		// which might create new network instances. So from this point we should be considered
+		// live in the game.
+		//
+		if ( GameSystem is not null )
+		{
+			try
+			{
+				await GameSystem.SetSnapshotAsync( msg.Snapshot );
+			}
+			catch ( Exception e )
+			{
+				Log.Error( e );
+				IGameInstanceDll.Current.Disconnect( "Error Deserializing Snapshot" );
+				return;
+			}
+		}
+
+		Log.Trace( $"[{this}] Finished loading snapshot" );
+
+		var output = new ClientReady
+		{
+			HandshakeId = msg.HandshakeId
+		};
+
+		source.SendMessage( output );
+	}
+
+	Task On_Handshake_ClientReady( ClientReady msg, Connection source, Guid msgId )
+	{
+		if ( !IsHost || source.IsHost )
+			return Task.CompletedTask;
+
+		if ( msg.HandshakeId != source.HandshakeId )
+			return Task.CompletedTask;
+
+		Log.Trace( $"[{this}] Client is ready" );
+
+		if ( source.State != Connection.ChannelState.Snapshot )
+		{
+			source.Kick( $"Invalid Handshake State {source.State}" );
+			Log.Info( $"Kicking {source.Name} [{source.SteamId}] Invalid Handshake State {source.State}" );
+			return Task.CompletedTask;
+		}
+
+		source.State = Connection.ChannelState.Connected;
+
+		//
+		// Tell game this guy is fully active.
+		//
+		GameSystem?.OnJoined( source );
+
+		var output = new Activate();
+		output.HandshakeId = msg.HandshakeId;
+
+		source.SendMessage( output );
+
+		Log.Info( $"{source.Name} [{source.SteamId}] is connected" );
+
+		return Task.CompletedTask;
+	}
+
+	Task On_Handshake_Restart( RestartHandshakeMsg msg, Connection source, Guid msgId )
+	{
+		if ( !IsHost || source.IsHost )
+			return Task.CompletedTask;
+
+		StartHandshake( source );
+
+		return Task.CompletedTask;
+	}
+
+	Task On_Kick( KickMsg msg, Connection source, Guid msgId )
+	{
+		if ( !source.IsHost )
+		{
+			// Conna: only the host can kick us.
+			return Task.CompletedTask;
+		}
+
+		FailureReason = $"Kicked from server.\n\nReason: {msg.Reason}";
+		Api.Activity.SetExitReason( "kicked", msg.Reason );
+		IGameInstanceDll.Current.Disconnect( FailureReason );
+		return Task.CompletedTask;
+	}
+
+	Task On_Handshake_Activate( Activate msg, Connection source, Guid msgId )
+	{
+		if ( !source.IsHost )
+			return Task.CompletedTask;
+
+		if ( Connection.Local is null )
+			throw new UnauthorizedAccessException();
+
+		if ( msg.HandshakeId != Connection.Local.HandshakeId )
+			return Task.CompletedTask;
+
+		if ( Application.IsEditor )
+		{
+			IToolsDll.Current?.SetPlaying();
+		}
+
+		Log.Trace( $"[{this}] I am spawning into the game!" );
+		LoadingScreen.IsVisible = false;
+		Api.Activity.LoadFinished();
+
+		Connection.Local.State = Connection.ChannelState.Connected;
+		source.State = Connection.ChannelState.Connected;
+
+		// Before the party sees we're in and follows
+		InviteParty();
+
+		return Task.CompletedTask;
+	}
+}

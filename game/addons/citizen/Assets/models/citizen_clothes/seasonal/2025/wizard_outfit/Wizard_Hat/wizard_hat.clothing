@@ -1,0 +1,46 @@
+{
+  "HasHumanSkin": false,
+  "HumanSkinModel": null,
+  "HumanSkinMaterial": null,
+  "HumanEyesMaterial": null,
+  "HumanSkinBodyGroups": 0,
+  "HumanSkinMaterialGroup": null,
+  "HumanSkinTags": null,
+  "Title": "Wizard Hat",
+  "Subtitle": null,
+  "Category": "HatCostume",
+  "ConditionalModels": {},
+  "Tags": null,
+  "Model": "models/citizen_clothes/seasonal/2025/wizard_outfit/wizard_hat/models/wizard_hat.vmdl",
+  "HumanAltModel": "models/citizen_clothes/seasonal/2025/wizard_outfit/wizard_hat/models/wizard_hat_m_human.vmdl",
+  "HumanAltFemaleModel": "models/citizen_clothes/seasonal/2025/wizard_outfit/wizard_hat/models/wizard_hat_m_human.vmdl",
+  "SkinMaterial": null,
+  "EyesMaterial": null,
+  "MaterialGroup": null,
+  "HeelHeight": 0,
+  "SlotsUnder": "HeadTop",
+  "SlotsOver": 0,
+  "HideBody": 0,
+  "DeformationMode": "Normal",
+  "AllowTintSelect": false,
+  "TintSelection": {
+    "blend": "Linear",
+    "color": [
+      {
+        "t": 0.5,
+        "c": "1,1,1,1"
+      }
+    ],
+    "alpha": []
+  },
+  "TintDefault": 0.5,
+  "SteamItemDefinitionId": 532424,
+  "Icon": {
+    "Path": "models/citizen_clothes/seasonal/2025/wizard_outfit/wizard_hat/wizard_hat.clothing.png",
+    "Mode": "Head",
+    "UsePositionOffset": false,
+    "PositionOffset": "0,0,0"
+  },
+  "__references": [],
+  "__version": 0
+}

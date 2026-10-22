@@ -1,0 +1,56 @@
+﻿// RichTextKit
+// Copyright © 2019-2020 Topten Software. All Rights Reserved.
+// 
+// Licensed under the Apache License, Version 2.0 (the "License"); you may 
+// not use this product except in compliance with the License. You may obtain 
+// a copy of the License at
+// 
+// http://www.apache.org/licenses/LICENSE-2.0
+// 
+// Unless required by applicable law or agreed to in writing, software 
+// distributed under the License is distributed on an "AS IS" BASIS, WITHOUT 
+// WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the 
+// License for the specific language governing permissions and limitations 
+// under the License.
+
+using Sandbox;
+using SkiaSharp;
+
+namespace Topten.RichTextKit
+{
+	/// <summary>
+	/// Describes a text effect to apply to the rendering of text
+	/// </summary>
+	public struct TextEffect
+	{
+		public SKColorF Color { get; set; }
+		public SKPoint Offset { get; set; }
+		public float Width { get; set; }
+		public float BlurSize { get; set; }
+
+		public static TextEffect DropShadow( SKColorF sKColor, float x, float y, float blurSize )
+		{
+			blurSize = blurSize.Clamp( 0, 512 );
+
+			return new TextEffect
+			{
+				Color = sKColor,
+				Offset = new SKPoint( x, y ),
+				BlurSize = blurSize,
+				Width = 0.0f,
+			};
+		}
+
+		public static TextEffect Outline( SKColorF sKColor, float size )
+		{
+			size = size.Clamp( 0, 512 );
+
+			return new TextEffect
+			{
+				Color = sKColor,
+				Offset = new SKPoint( 0, 0 ),
+				Width = size,
+			};
+		}
+	}
+}

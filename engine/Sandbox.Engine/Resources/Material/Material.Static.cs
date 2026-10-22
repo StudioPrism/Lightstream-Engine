@@ -1,0 +1,94 @@
+using NativeEngine;
+using System.IO;
+using System.Runtime.CompilerServices;
+
+namespace Sandbox;
+
+/// <summary>
+/// A material. Uses several <see cref="Texture"/>s and a <see cref="Shader"/> with specific settings for more interesting visual effects.
+/// </summary>
+public sealed partial class Material : Resource
+{
+	/// <summary>
+	/// Initializes all built-in UI materials during startup, before rendering can create an active context.
+	/// </summary>
+	internal static void Preload()
+	{
+		RuntimeHelpers.RunClassConstructor( typeof( UI ).TypeHandle );
+	}
+
+	/// <summary>
+	/// Create a new empty material at runtime.
+	/// </summary>
+	/// <param name="materialName">Name of the new material.</param>
+	/// <param name="shader">Shader that the new material will use.</param>
+	/// <param name="anonymous">If false, material can be found by name.</param>
+	/// <returns>The new material.</returns>
+	public static Material Create( string materialName, string shader, bool anonymous = true )
+	{
+		// MaterialSystem2.CreateRawMaterial will also assert in native, but let's catch this in managed too.
+		ThreadSafe.AssertIsMainThread();
+
+		// Prevent reentrency
+		if ( Graphics.IsActive ) throw new System.Exception( "Material.Create cannot be called during rendering." );
+
+		return FromNative( MaterialSystem2.CreateRawMaterial( materialName, shader, anonymous ) );
+	}
+
+	static Dictionary<string, Material> shaderMaterials = new Dictionary<string, Material>( StringComparer.OrdinalIgnoreCase );
+
+	/// <summary>
+	/// Get an empty material based on the specified shader. This will cache the material so that subsequent calls
+	/// will return the same material.
+	/// </summary>
+	public static Material FromShader( Shader shader )
+	{
+		if ( shader == null )
+			return null;
+
+		var shaderPath = shader.ResourcePath.NormalizeFilename( false ).Replace( "/", "_" );
+		if ( shaderMaterials.TryGetValue( shaderPath, out var material ) )
+			return material;
+
+		var materialName = $"__shader_{shaderPath}.vmat";
+
+		material = Create( materialName, shader.ResourcePath );
+		shaderMaterials[shaderPath] = material;
+		return material;
+	}
+
+	/// <summary>
+	/// Get an empty material based on the specified shader. This will cache the material so that subsequent calls
+	/// will return the same material.
+	/// </summary>
+	public static Material FromShader( string path )
+	{
+		var pathSpan = path.AsSpan();
+		var shaderDirSpan = Path.GetDirectoryName( pathSpan );
+		var shaderNameSpan = Path.GetFileNameWithoutExtension( pathSpan );
+		var shaderPath = Path.Join( shaderDirSpan, shaderNameSpan ).NormalizeFilename( false, true, '_' );
+		if ( shaderMaterials.TryGetValue( shaderPath, out var material ) )
+			return material;
+
+		var materialName = $"__shader_{shaderPath}.vmat";
+
+		material = Create( materialName, path );
+		shaderMaterials[shaderPath] = material;
+		return material;
+	}
+
+	/// <summary>
+	/// Dispose all cached shader materials created via <see cref="FromShader(Shader)"/> and <see cref="FromShader(string)"/>.
+	/// Called during shutdown to release native strong handles before the resource system tears down.
+	/// </summary>
+	internal static void Shutdown()
+	{
+		foreach ( var material in shaderMaterials.Values )
+		{
+			material?.Destroy();
+		}
+
+		shaderMaterials.Clear();
+	}
+
+}

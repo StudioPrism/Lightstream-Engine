@@ -1,0 +1,12 @@
+﻿@using Sandbox.UI;
+@namespace TestComponents
+
+<div>
+    <Panel @ref=TargetPanel ElementName:bind=@PanelName></Panel>
+</div>
+
+@code 
+{
+    public Panel TargetPanel{ get; set; }
+    public string PanelName { get; set; } = "Poops";
+}

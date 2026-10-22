@@ -1,0 +1,43 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <VersionPrefix>1.0.1</VersionPrefix>
+    <TargetFramework>net10.0</TargetFramework>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <AssemblyName>Sandbox.Compiling</AssemblyName>
+    <PackageId>Sandbox.Compiling</PackageId>
+    <NoWarn>1701;1702;1591;RS2008</NoWarn>
+	<LangVersion>latest</LangVersion>
+	<SatelliteResourceLanguages></SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sandbox.Access\Sandbox.Access.csproj" />
+    <ProjectReference Include="..\Sandbox.Filesystem\Sandbox.Filesystem.csproj" />
+    <ProjectReference Include="..\Sandbox.Generator\Sandbox.Generator.csproj" />
+    <ProjectReference Include="..\Sandbox.Razor\Sandbox.Razor.csproj" />
+    <ProjectReference Include="..\Sandbox.System\Sandbox.System.csproj" />
+  </ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
+		<PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.12.0-beta1.25218.8" />
+	</ItemGroup>
+
+    <ItemGroup>
+		<EmbeddedResource Include="EmbeddedRefs\*.dll">
+			<LogicalName>%(Filename)%(Extension)</LogicalName>
+		</EmbeddedResource>
+    </ItemGroup>
+  
+</Project>

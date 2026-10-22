@@ -1,0 +1,1126 @@
+{
+	"__InternalComment": "Index of third-party legal notices for libraries used by s&box and its components. This only lists top level dependencies; some of these may in turn depend on other libraries. Those are listed in the respective license files.",
+	"Statement": "The following libraries and components are included or used by s&box. We appreciate the developers' contributions to open & shared software.",
+	"Components": [
+		{
+			"Name": "Yoga",
+			"Comment": "Portions of the managed flexbox layout implementation and its conformance fixtures derive from Yoga 3.2.1. Source-derived code is compiled into Sandbox.Layout; no native Yoga library is required.",
+			"UsedBy": [
+				"Sandbox.Layout"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/facebook/yoga",
+			"Version": "3.2.1",
+			"Linkage": "static",
+			"Modified": true,
+			"Copyright": [
+				"Facebook, Inc. and its affiliates."
+			]
+		},
+		{
+			"Name": "Taffy",
+			"Comment": "Portions of the managed grid layout implementation and the block/grid conformance fixtures derive from Taffy. Source-derived code is compiled into Sandbox.Layout. Fixture revision: ac2b86929d35b7e0f1d24919595b89b4ce89baa4.",
+			"UsedBy": [
+				"Sandbox.Layout"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/DioxusLabs/taffy",
+			"Linkage": "static",
+			"Modified": true,
+			"Copyright": [
+				"2018 Visly Inc.",
+				"2026 Taffy Authors"
+			]
+		},
+		{
+			"Name": "SkiaSharp",
+			"Comment": "SkiaSharp is a cross-platform 2D graphics API for .NET platforms based on Google's Skia Graphics Library. It provides a comprehensive 2D API that can be used across mobile, server and desktop models to render images.",
+			"UsedBy": [
+				"sbox",
+				"sbox-dev"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/mono/SkiaSharp",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2015-2016 Xamarin, Inc",
+				"2017-2018 Microsoft Corporation",
+				"Thirdparty contributors"
+			]
+		},
+		{
+			"Name": "libtiff",
+			"Comment": "TIFF image format library.",
+			"UsedBy": [
+				"bitmap"
+			],
+			"License": "libtiff",
+			"ProjectUrl": "https://gitlab.com/libtiff/libtiff/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"1988-1997 Sam Leffler",
+				"1991-1997 Silicon Graphics, Inc."
+			]
+		},
+		{
+			"Name": "Material Design Icons",
+			"Comment": "Iconography assets.",
+			"UsedBy": [
+				"sbox-dev",
+				"sbox"
+			],
+			"License": "Apache-2.0",
+			"ProjectUrl": "https://github.com/google/material-design-icons/",
+			"Linkage": "static",
+			"Copyright": [
+				"2015 Google Inc."
+			]
+		},
+		{
+			"Name": "Twemoji Mozilla",
+			"Comment": "COLR emoji font used as a fallback on Linux and macOS. Graphics are Twemoji (CC-BY-4.0).",
+			"UsedBy": [
+				"sbox",
+				"sbox-dev"
+			],
+			"License": "Apache-2.0",
+			"ProjectUrl": "https://github.com/mozilla/twemoji-colr",
+			"Version": "0.7.0",
+			"Linkage": "static",
+			"Modified": true,
+			"Copyright": [
+				"2016-2018 Mozilla Foundation",
+				"2020 Twitter, Inc and other contributors"
+			]
+		},
+		{
+			"Name": "MurmurHash3",
+			"Comment": "Non-cryptographic hash (public domain).",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "Public-Domain",
+			"ProjectUrl": "https://github.com/aappleby/smhasher/",
+			"Linkage": "static",
+			"Copyright": [
+				"Austin Appleby"
+			]
+		},
+		{
+			"Name": "Qt5",
+			"Comment": "Application framework / GUI toolkit (dynamically linked). Source code and modifications: https://github.com/Facepunch/qt",
+			"UsedBy": [
+				"sbox-dev"
+			],
+			"License": "LGPL-3.0-only",
+			"ProjectUrl": "https://doc.qt.io/archives/qt-5.15/licenses-used-in-qt.html",
+			"Version": "5",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2018 The Qt Company Ltd. and other contributors"
+			]
+		},
+		{
+			"Name": "zlib",
+			"Comment": "General-purpose compression library.",
+			"UsedBy": [
+				"libtiff"
+			],
+			"License": "Zlib",
+			"ProjectUrl": "https://github.com/madler/zlib/",
+			"Linkage": "static",
+			"Copyright": [
+				"1995-2024 Jean-loup Gailly and Mark Adler"
+			]
+		},
+		{
+			"Name": "mimalloc",
+			"Comment": "mimalloc is a compact general purpose allocator with excellent performance.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT License",
+			"ProjectUrl": "https://github.com/microsoft/mimalloc",
+			"Version": "3.1.5",
+			"Linkage": "static",
+			"Copyright": [
+				"2018-2025 Microsoft Corporation",
+				"2018-2025 Daan Leijen"
+			]
+		},
+		{
+			"Name": "OpenImageDenoise",
+			"Comment": "Denoising library for Monte Carlo rendered images.",
+			"UsedBy": [
+				"embree"
+			],
+			"License": "Apache-2.0",
+			"ProjectUrl": "https://github.com/RenderKit/oidn/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"Intel Corporation and contributors"
+			]
+		},
+		{
+			"Name": "Halton Sampler",
+			"Comment": "Low-discrepancy Halton sequence sampler.",
+			"UsedBy": [
+				"lightinglib"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/lgruen/halton",
+			"Linkage": "header-only",
+			"Copyright": [
+				"2012 Leonhard Gruenschloss"
+			]
+		},
+		{
+			"Name": "SFMT",
+			"Comment": "SIMD-oriented Fast Mersenne Twister PRNG.",
+			"UsedBy": [
+				"lightinglib"
+			],
+			"License": "BSD-3-Clause",
+			"ProjectUrl": "https://github.com/MersenneTwister-Lab/SFMT/",
+			"Linkage": "static",
+			"Copyright": [
+				"2006, 2007 Mutsuo Saito",
+				"2006, 2007 Makoto Matsumoto",
+				"2006, 2007 Hiroshima University",
+				"2012 Mutsuo Saito",
+				"2012 Makoto Matsumoto",
+				"2012 Hiroshima University",
+				"2012 The University of Tokyo"
+			]
+		},
+		{
+			"Name": "lz4",
+			"Comment": "LZ4 fast compression library.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "BSD-2-Clause",
+			"ProjectUrl": "https://github.com/lz4/lz4/",
+			"Linkage": "static",
+			"Copyright": [
+				"2011-2020 Yann Collet"
+			]
+		},
+		{
+			"Name": "zstd",
+			"Comment": "Zstandard (Zstd) compression library.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "BSD-3-Clause",
+			"ProjectUrl": "https://github.com/facebook/zstd/",
+			"Linkage": "static",
+			"Copyright": [
+				"2016-present Facebook, Inc."
+			]
+		},
+		{
+			"Name": "meshoptimizer",
+			"Comment": "Mesh optimization and compression routines.",
+			"UsedBy": [
+				"resourcecompiler",
+				"modellib"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/zeux/meshoptimizer",
+			"Linkage": "static",
+			"Copyright": [
+				"2016-2025 Arseny Kapoulkine"
+			]
+		},
+		{
+			"Name": "DirectXTex",
+			"Comment": "DirectXTex texture processing and loading library (BC7 CPU decompression).",
+			"UsedBy": [
+				"resourcecompiler"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/microsoft/DirectXTex/",
+			"Version": "161",
+			"Linkage": "static",
+			"Copyright": [
+				"Microsoft Corporation"
+			]
+		},
+		{
+			"Name": "LZMA SDK",
+			"Comment": "LZMA compression SDK (dual license: LGPL 2.1 or CPL 1.0 with special linking exception).",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "Public-Domain",
+			"ProjectUrl": "https://spdx.org/licenses/LZMA-SDK-9.22.html",
+			"Version": "9.2",
+			"Linkage": "static",
+			"Copyright": [
+				"1999-2006 Igor Pavlov"
+			]
+		},
+		{
+			"Name": "ANTLR 3",
+			"Comment": "ANTLR v3 runtime and C runtime (parser generator support) used for shader preprocessing (Very Custom).",
+			"UsedBy": [
+				"shadercompiler"
+			],
+			"License": "BSD-3-Clause",
+			"ProjectUrl": "https://www.antlr.org/",
+			"Version": "3.2",
+			"Linkage": "static",
+			"Modified": true,
+			"Copyright": [
+				"2010 Terence Parr"
+			]
+		},
+		{
+			"Name": "mcpp",
+			"Comment": "mcpp C/C++ preprocessor.",
+			"UsedBy": [
+				"schemacompiler"
+			],
+			"License": "BSD-2-Clause",
+			"ProjectUrl": "https://mcpp.sourceforge.net/",
+			"Linkage": "static",
+			"Copyright": [
+				"1998, 2002-2008 Kiyoshi Matsui"
+			]
+		},
+		{
+			"Name": "ufbx",
+			"Comment": "Single source file FBX import library.",
+			"UsedBy": [
+				"resourcecompiler",
+				"modeldoc",
+				"hammer"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/ufbx/ufbx",
+			"Linkage": "static",
+			"Copyright": [
+				"2020 Samuli Raivio"
+			]
+		},
+		{
+			"Name": "VHACD",
+			"Comment": "Volumetric Hierarchical Approximate Convex Decomposition.",
+			"UsedBy": [
+				"quickhull"
+			],
+			"License": "BSD-3-Clause",
+			"ProjectUrl": "https://github.com/kmammou/v-hacd/",
+			"Linkage": "static",
+			"Copyright": [
+				"2011 Khaled Mamou"
+			]
+		},
+		{
+			"Name": "AMD Compressonator",
+			"Comment": "ATI/AMD Compressonator texture compression utilities/library.",
+			"UsedBy": [
+				"resourcecompiler",
+				"bitmap"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/GPUOpen-Tools/compressonator/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2016 Advanced Micro Devices, Inc.",
+				"2004-2006 ATI Technologies Inc."
+			]
+		},
+		{
+			"Name": "OpenEXR",
+			"Comment": "High dynamic-range image file format library (OpenEXR/IlmBase).",
+			"UsedBy": [
+				"vrad3",
+				"alembic"
+			],
+			"License": "BSD-3-Clause",
+			"ProjectUrl": "https://github.com/AcademySoftwareFoundation/openexr/",
+			"Version": "2.2.1",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2006-2017 Industrial Light & Magic, a division of Lucasfilm Entertainment Company Ltd.",
+				"Portions contributed by others (see upstream repository)"
+			]
+		},
+		{
+			"Name": "libebur128",
+			"Comment": "EBU R128 loudness measurement library.",
+			"UsedBy": [
+				"resourcecompiler"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/jiixyj/libebur128/",
+			"Linkage": "static",
+			"Copyright": [
+				"2011 Jan Kokemüller"
+			]
+		},
+		{
+			"Name": "Alembic",
+			"Comment": "Open computer graphics interchange framework (geometry/cache data).",
+			"UsedBy": [
+				"modeldoc"
+			],
+			"License": "BSD-3-Clause",
+			"ProjectUrl": "https://github.com/alembic/alembic/",
+			"Linkage": "static",
+			"Copyright": [
+				"2009-2015 Lucasfilm Entertainment Company Ltd. or Lucasfilm Ltd.",
+				"2009-2015 Sony Pictures Imageworks Inc."
+			]
+		},
+		{
+			"Name": "DirectX Shader Compiler",
+			"Comment": "HLSL compiler (planned replacement by Slang).",
+			"UsedBy": [
+				"shaderpreprocessing"
+			],
+			"License": "Apache-2.0-with-LLVM-Exception",
+			"ProjectUrl": "https://github.com/microsoft/DirectXShaderCompiler",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"Microsoft Corporation",
+				"Portions 2003-2024 LLVM Project"
+			]
+		},
+		{
+			"Name": "Slang",
+			"Comment": "Shading language & compiler; compiles our HLSL shaders to SPIR-V.",
+			"UsedBy": [
+				"vfx_vulkan"
+			],
+			"License": "Apache-2.0-with-LLVM-Exception",
+			"ProjectUrl": "https://github.com/shader-slang/slang",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"NVIDIA Corporation & Affiliates",
+				"The Khronos Group Inc.",
+				"Slang contributors"
+			]
+		},
+		{
+			"Name": "embree",
+			"Comment": "Intel Embree ray tracing kernels (embree3 for vrad3; embree4 via steamaudio).",
+			"UsedBy": [
+				"vrad3",
+				"steamaudio"
+			],
+			"License": "Apache-2.0",
+			"ProjectUrl": "https://github.com/embree/embree/",
+			"Linkage": "static",
+			"Copyright": [
+				"2009-2024 Intel Corporation"
+			]
+		},
+		{
+			"Name": "etc2comp",
+			"Comment": "ETC2 / EAC texture compression utilities.",
+			"UsedBy": [
+				"resourcecompiler"
+			],
+			"License": "Apache-2.0",
+			"ProjectUrl": "https://github.com/google/etc2comp/",
+			"Linkage": "static",
+			"Copyright": [
+				"2015 Etc2Comp Authors"
+			]
+		},
+		{
+			"Name": "ISPCTextureCompressor",
+			"Comment": "Intel ISPC texture compressor (e.g. BC7).",
+			"UsedBy": [
+				"resourcecompiler"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/GameTechDev/ISPCTextureCompressor/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2017 Intel Corporation"
+			]
+		},
+		{
+			"Name": "jsoncpp",
+			"Comment": "C++ JSON parsing/manipulation library.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/open-source-parsers/jsoncpp/",
+			"Linkage": "static",
+			"Copyright": [
+				"2007-2010 Baptiste Lepilleur and The JsonCpp Authors"
+			]
+		},
+		{
+			"Name": "Oculus LipSync",
+			"Comment": "Real-time phoneme / lip sync solution.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "Oculus-SDK",
+			"ProjectUrl": "https://developers.meta.com/horizon/licenses/audio-3.3",
+			"Linkage": "dynamic"
+		},
+		{
+			"Name": "recastnavigation",
+			"Comment": "Navigation mesh generation & pathfinding (heavily modified). We use both recastnavigation & dotrecast",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "Zlib",
+			"ProjectUrl": "https://github.com/recastnavigation/recastnavigation/",
+			"Linkage": "static",
+			"Modified": true,
+			"Copyright": [
+				"Mikko Mononen",
+				"Piotr Piastucki",
+				"choi ikpil"
+			]
+		},
+		{
+			"Name": "RenderDoc",
+			"Comment": "Graphics debugging & capture (headers only in build integration).",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/baldurk/renderdoc/",
+			"Version": "1.5.0",
+			"Linkage": "header-only",
+			"Copyright": [
+				"2014-2024 Baldur Karlsson"
+			]
+		},
+		{
+			"Name": "SDL3",
+			"Comment": "Cross-platform windowing, input, audio (runtime).",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "Zlib",
+			"ProjectUrl": "https://github.com/libsdl-org/SDL/",
+			"Version": "3.2.0",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"1997-2025 Sam Lantinga"
+			]
+		},
+		{
+			"Name": "SPIRV-Tools",
+			"Comment": "SPIR-V optimization, validation and reflection tooling. Also provides the id canonicalization that glslang's SPVRemapper used to.",
+			"UsedBy": [
+				"shaderpreprocessing"
+			],
+			"License": "Apache-2.0",
+			"ProjectUrl": "https://github.com/KhronosGroup/SPIRV-Tools/",
+			"Linkage": "static",
+			"Copyright": [
+				"2015-2024 The Khronos Group Inc."
+			]
+		},
+		{
+			"Name": "SPIRV-Headers",
+			"Comment": "SPIRV-Headers",
+			"UsedBy": [
+				"shaderpreprocessing"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/KhronosGroup/SPIRV-Headers/",
+			"Linkage": "static",
+			"Copyright": [
+				"2015-2024 The Khronos Group Inc."
+			]
+		},
+		{
+			"Name": "SPIRV-Reflect",
+			"Comment": "SPIRV-Reflect is a lightweight library that provides a C/C++ reflection API for SPIR-V shader bytecode in Vulkan applications",
+			"UsedBy": [
+				"shaderpreprocessing"
+			],
+			"License": "Apache-2.0",
+			"ProjectUrl": "https://github.com/KhronosGroup/SPIRV-Reflect/",
+			"Linkage": "static",
+			"Copyright": [
+				"2017-2018 Google Inc."
+			]
+		},
+		{
+			"Name": "stb",
+			"Comment": "Single-file public domain-ish libraries (image, truetype, etc.).",
+			"UsedBy": [
+				"resourcecompiler",
+				"engine2"
+			],
+			"License": "Public-Domain",
+			"ProjectUrl": "https://github.com/nothings/stb/",
+			"Linkage": "header-only",
+			"Copyright": [
+				"Sean Barrett and stb contributors"
+			]
+		},
+		{
+			"Name": "Steam Audio",
+			"Comment": "Audio propagation, occlusion and reverb simulation.",
+			"UsedBy": [
+				"steamaudio"
+			],
+			"License": "Apache-2.0",
+			"ProjectUrl": "https://github.com/ValveSoftware/steam-audio/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"Valve Corporation"
+			]
+		},
+		{
+			"Name": "Superluminal",
+			"Comment": "PerformanceAPI.dll, used for sampling and instrumentation profiler integration.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "BSD-2-Clause",
+			"ProjectUrl": "https://superluminal.eu/eula",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2025 Superluminal"
+			]
+		},
+		{
+			"Name": "tinyexr",
+			"Comment": "Tiny OpenEXR loader/saver.",
+			"UsedBy": [
+				"resourcecompiler"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/syoyo/tinyexr",
+			"Linkage": "header-only",
+			"Copyright": [
+				"2020 Syoyo Fujita and contributors"
+			]
+		},
+		{
+			"Name": "Wuffs",
+			"Comment": "Wrangling Untrusted File Formats Safely (image decoding library).",
+			"UsedBy": [
+				"bitmap"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/google/wuffs/",
+			"Linkage": "header-only",
+			"Copyright": [
+				"2023 The Wuffs Authors"
+			]
+		},
+		{
+			"Name": "volk",
+			"Comment": "Meta-loader for Vulkan function pointers.",
+			"UsedBy": [
+				"rendersystem"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/zeux/volk/",
+			"Linkage": "header-only",
+			"Copyright": [
+				"2018-2025 Arseny Kapoulkine"
+			]
+		},
+		{
+			"Name": "Vulkan Memory Allocator",
+			"Comment": "Easy to integrate Vulkan memory allocation library",
+			"UsedBy": [
+				"rendersystem"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator",
+			"Linkage": "static",
+			"Copyright": [
+				"2017-2025 Advanced Micro Devices, Inc."
+			]
+		},
+		{
+			"Name": "Vulkan Headers",
+			"Comment": "Vulkan header files and API registry",
+			"UsedBy": [
+				"rendersystem"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/KhronosGroup/Vulkan-Headers",
+			"Linkage": "static",
+			"Copyright": [
+				"2015-2023 The Khronos Group Inc."
+			]
+		},
+		{
+			"Name": "Mesa KosmicKrisp",
+			"Comment": "Mesa Vulkan-on-Metal driver for macOS on Apple Silicon. Loaded as libvulkan_kosmickrisp.dylib in place of a platform Vulkan loader.",
+			"UsedBy": [
+				"rendersystem"
+			],
+			"License": "MIT AND BSD-3-Clause AND SGI-B-2.0",
+			"ProjectUrl": "https://github.com/facepunch/mesa-kosmickrisp",
+			"Version": "26.3.0-devel",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"Mesa contributors",
+				"1999-2007 Brian Paul",
+				"2025 LunarG, Inc.",
+				"2025 Google LLC"
+			]
+		},
+		{
+			"Name": "Box3D",
+			"Comment": "Physics Engine",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT",
+			"ProjectUrl": "http://github.com/izabu/box3d/",
+			"Linkage": "static",
+			"Copyright": [
+				"2022 Dirk Gregorius",
+				"2022 Erin Catto"
+			]
+		},
+		{
+			"Name": "xxhash",
+			"Comment": "Fast non-cryptographic hash (xxhas3 entry normalized).",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "BSD-2-Clause",
+			"ProjectUrl": "https://github.com/Cyan4973/xxHash/",
+			"Linkage": "static",
+			"Copyright": [
+				"2012-2021 Yann Collet"
+			]
+		},
+		{
+			"Name": "Facepunch.ActionGraphs",
+			"Comment": "Facepunch internal ActionGraphs package.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "Proprietary",
+			"ProjectUrl": "https://github.com/Facepunch/ActionGraphs",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"Facepunch Studios Ltd."
+			]
+		},
+		{
+			"Name": "Fleck",
+			"Comment": "WebSocket server implementation for .NET.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/statianzo/Fleck/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2010-2018 Jason Staten"
+			]
+		},
+		{
+			"Name": "K4os.Compression.LZ4",
+			"Comment": "Managed LZ4 codec (core).",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/MiloszKrajewski/K4os.Compression.LZ4/blob/master/LICENSE",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2017 Milosz Krajewski"
+			]
+		},
+		{
+			"Name": "LiteDB",
+			"Comment": "Embedded NoSQL database for .NET.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/mbdavid/LiteDB/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2014-2022 Mauricio David"
+			]
+		},
+		{
+			"Name": "dotnet",
+			"Comment": "s&box relies heavily on .NET and the work of the .NET Foundation and contributors. We use the following .NET components (all MIT licensed): Roslyn, Microsoft.CodeAnalysis.Analyzers, Microsoft.Extensions.Caching.Memory, and the .NET Runtime (Base Class Libraries).",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/dotnet/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				".NET Foundation and Contributors"
+			]
+		},
+		{
+			"Name": "Svg.Skia",
+			"Comment": "SVG rendering via SkiaSharp.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/wieslawsoltes/Svg.Skia/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2020 Wiesław Šoltés"
+			]
+		},
+		{
+			"Name": "Azure SDK for dotnet",
+			"Comment": "Azure client SDK (Azure.Messaging.WebPubSub)",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/Azure/azure-sdk-for-net",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"Microsoft Corporation"
+			]
+		},
+		{
+			"Name": "nvpatch",
+			"Comment": "NVIDIA patching / update helper (internal or third-party).",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "Apache-2.0",
+			"ProjectUrl": "https://github.com/toptensoftware/nvpatch",
+			"Copyright": [
+				"2014-2021 Topten Software"
+			],
+			"Linkage": "dynamic"
+		},
+		{
+			"Name": "bc7enc_rdo",
+			"Comment": "BC7 texture encoder (bc7enc_rdo) used via bc7enc.dll for texture compression, plus its statically linked entropy reduction transform for RDO texture encoding.",
+			"UsedBy": [
+				"resourcecompiler"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/richgel999/bc7enc_rdo/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2020-2021 Richard Geldreich, Jr."
+			]
+		},
+		{
+			"Name": "LAME",
+			"Comment": "LAME MP3 encoder (libmp3lame).",
+			"UsedBy": [
+				"soundssystem"
+			],
+			"License": "LGPL-2.1-or-later",
+			"ProjectUrl": "https://lame.sourceforge.io/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"Rogério Brito",
+				"Robert Hegemann",
+				"Alexander Leidinger",
+				"Gabriel Bouvigne",
+				"Mike Cheng",
+				"Frank Klemm",
+				"Naoki Shibata",
+				"Mark Taylor",
+				"Takehiro Tominaga",
+				"Roberto Amorim",
+				"Josep Maria Antolín Segura",
+				"John Dahlstrom",
+				"John Dee",
+				"Dominique Duvivier",
+				"Albert Faber",
+				"Joseph Flynn",
+				"Peter Gubanov",
+				"Guillaume Lessard",
+				"Steve Lhomme",
+				"Don Melton",
+				"Darin Morrison",
+				"Kyle VanderBeek"
+			]
+		},
+		{
+			"Name": "Sentry Native SDK",
+			"Comment": "Error and crash reporting (sentry.dll).",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/getsentry/sentry-native/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2019 Sentry",
+				"Functional Software, Inc."
+			]
+		},
+		{
+			"Name": "OpenXR",
+			"Comment": "Khronos OpenXR runtime loader (openxr_loader.dll).",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "Apache-2.0",
+			"ProjectUrl": "https://github.com/KhronosGroup/OpenXR-SDK/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"The Khronos Group Inc."
+			]
+		},
+		{
+			"Name": "NVIDIA Nsight Aftermath",
+			"Comment": "GPU crash dump/diagnostics library (GFSDK_Aftermath_Lib.x64.dll).",
+			"UsedBy": [
+				"engine2"
+			],
+			"ProjectUrl": "https://docs.nvidia.com/nsight-aftermath/",
+			"License": "NVIDIA-Aftermath",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2018-2024 NVIDIA Corporation. All rights reserved."
+			]
+		},
+		{
+			"Name": "vswhere",
+			"Comment": "Microsoft Visual Studio discovery utility (vswhere.exe).",
+			"UsedBy": [
+				"buildtools"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/microsoft/vswhere/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"Microsoft Corporation"
+			]
+		},
+		{
+			"Name": "Qt Advanced Docking System",
+			"Comment": "Qt Advanced Docking System lets you create customizable layouts using a full featured window docking system similar to what is found in many popular integrated development environments (IDEs) such as Visual Studio.",
+			"UsedBy": [
+				"toolframework2"
+			],
+			"License": "LGPL-2.1",
+			"ProjectUrl": "https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"2017 Uwe Kindler"
+			]
+		},
+		{
+			"Name": "MonoMod",
+			"Comment": "A flexible and easily extensible runtime detouring library, supporting x86/x86_64 on .NET Framework, .NET Core, and Mono.",
+			"UsedBy": [
+				"sbox",
+				"sbox-dev"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/MonoMod/MonoMod/",
+			"Linkage": "dynamic",
+			"Copyright": [
+				"Copyright (c) 2015 - 2020 0x0ade"
+			]
+		},
+		{
+			"Name": "dav1d",
+			"Comment": "AV1 cross-platform decoder focused on speed and correctness.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "BSD-2-Clause",
+			"ProjectUrl": "https://code.videolan.org/videolan/dav1d",
+			"Linkage": "static",
+			"Copyright": [
+				"2018-2025 VideoLAN and dav1d authors"
+			]
+		},
+		{
+			"Name": "SVT-AV1",
+			"Comment": "Scalable Video Technology for AV1 encoder.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "BSD-3-Clause-Clear",
+			"ProjectUrl": "https://gitlab.com/AOMediaCodec/SVT-AV1",
+			"Linkage": "static",
+			"Copyright": [
+				"2021 Alliance for Open Media"
+			]
+		},
+		{
+			"Name": "libvpx",
+			"Comment": "VP9 video codec library.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "BSD-3-Clause",
+			"ProjectUrl": "https://chromium.googlesource.com/webm/libvpx",
+			"Linkage": "static",
+			"Copyright": [
+				"2010 The WebM Project authors"
+			]
+		},
+		{
+			"Name": "libyuv",
+			"Comment": "YUV color space conversion and scaling library.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "BSD-3-Clause",
+			"ProjectUrl": "https://chromium.googlesource.com/libyuv/libyuv",
+			"Linkage": "static",
+			"Copyright": [
+				"2011 The LibYuv Project Authors"
+			]
+		},
+		{
+			"Name": "libopus",
+			"Comment": "Opus interactive audio codec library.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "BSD-3-Clause",
+			"ProjectUrl": "https://opus-codec.org/",
+			"Linkage": "static",
+			"Copyright": [
+				"2001-2023 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon"
+			]
+		},
+		{
+			"Name": "libwebp",
+			"Comment": "WebP image codec library.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "BSD-3-Clause",
+			"ProjectUrl": "https://chromium.googlesource.com/webm/libwebp",
+			"Linkage": "static",
+			"Copyright": [
+				"2010 Google Inc."
+			]
+		},
+		{
+			"Name": "libwebm",
+			"Comment": "WebM container format parser and muxer library.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "BSD-3-Clause",
+			"ProjectUrl": "https://chromium.googlesource.com/webm/libwebm",
+			"Linkage": "static",
+			"Copyright": [
+				"2010 Google Inc."
+			]
+		},
+		{
+			"Name": "minimp4",
+			"Comment": "Minimalistic MP4 mux/demux single-header library.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "CC0-1.0",
+			"ProjectUrl": "https://github.com/lieff/minimp4",
+			"Linkage": "static",
+			"Copyright": [
+				"lieff"
+			]
+		},
+		{
+			"Name": "dr_libs",
+			"Comment": "Single-header audio decoding libraries (dr_flac, dr_mp3, dr_wav).",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT-0",
+			"ProjectUrl": "https://github.com/mackron/dr_libs",
+			"Linkage": "static",
+			"Copyright": [
+				"2020 David Reid"
+			]
+		},
+		{
+			"Name": "PFFFT",
+			"Comment": "Pretty Fast FFT — real/complex FFT used by the sound system and Steam Audio.",
+			"UsedBy": [
+				"engine2",
+				"steamaudio"
+			],
+			"License": "BSD-3-Clause",
+			"ProjectUrl": "https://github.com/marton78/pffft",
+			"Linkage": "static",
+			"Copyright": [
+				"2020 Dario Mambro",
+				"2019 Hayati Ayguen",
+				"2013 Julien Pommier",
+				"2004 University Corporation for Atmospheric Research (UCAR)"
+			]
+		},
+		{
+			"Name": "libcurl",
+			"Comment": "HTTP client library for URL transfers.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "curl",
+			"ProjectUrl": "https://curl.se/libcurl/",
+			"Linkage": "static",
+			"Copyright": [
+				"1996-2026 Daniel Stenberg and many contributors"
+			]
+		},
+		{
+			"Name": "FidelityFX SDK",
+			"Comment": "AMD FidelityFX Super Resolution upscaling technologies. Includes FSR1 (spatial) and FSR3 (temporal) used by the rendering pipeline. Bundles a glslangValidator binary to build its shaders, licensed separately under licenses/glslang.",
+			"UsedBy": [
+				"engine2"
+			],
+			"License": "MIT",
+			"ProjectUrl": "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK",
+			"Linkage": "static",
+			"Copyright": [
+				"2024 Advanced Micro Devices, Inc.",
+				"glslangValidator: 2002-2024 The Khronos Group Inc., 2012-2016 LunarG, Inc., 2013-2016 Google, Inc."
+			]
+		},
+		{
+			"Name": "Bend Studio Screen Space Shadows",
+			"Comment": "Bend Studio's wavefront screen-space contact shadow technique (SIGGRAPH 2023). The GPU projection code is included in shaders/common/thirdparty/bend_sss_gpu.hlsl and the CPU dispatch list builder is ported in the ScreenSpaceShadows component.",
+			"UsedBy": [
+				"sbox",
+				"sbox-dev"
+			],
+			"License": "Apache-2.0",
+			"ProjectUrl": "https://www.bendstudio.com/blog/inside-bend-screen-space-shadows/",
+			"Linkage": "static",
+			"Copyright": [
+				"2023 Sony Interactive Entertainment"
+			]
+		},
+		{
+			"Name": "Intel CMAA2",
+			"Comment": "CMAA2 kernels adapted in shaders/common/thirdparty/cmaa2.hlsl. Includes nested MIT-licensed Microsoft packing helper code.",
+			"UsedBy": [
+				"sbox",
+				"sbox-dev"
+			],
+			"License": "Apache-2.0",
+			"ProjectUrl": "https://github.com/GameTechDev/CMAA2",
+			"Version": "2.3 (071c6b0857559f4e36f614362e6d2aab1b61938a)",
+			"Linkage": "static",
+			"Modified": true,
+			"Copyright": [
+				"2018 Intel Corporation",
+				"2015 Microsoft Corporation"
+			]
+		}
+	]
+}

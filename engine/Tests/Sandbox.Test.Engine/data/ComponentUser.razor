@@ -1,0 +1,21 @@
+﻿@namespace TestComponents
+@using System.Diagnostics;
+
+<Icon Title="One"></Icon>
+<Icon Title=@Two></Icon>
+<Icon Title="Three"></Icon>
+<Icon Title="Four"></Icon>
+<Icon Title="Nice" @OnSomethingSomething=@OnCallback></Icon>
+<Icon Title="Nice" @OnSomethingSomething=@(() => OnCallback() )></Icon>
+
+@code 
+{
+    public string Two = "Two";
+
+    public int CallbackCalls = 0;
+
+    public void OnCallback()
+    {
+        CallbackCalls++;
+    }
+}

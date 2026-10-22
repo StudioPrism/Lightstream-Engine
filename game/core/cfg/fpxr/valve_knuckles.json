@@ -1,0 +1,68 @@
+{
+  "profile": "/interaction_profiles/valve/knuckles",
+  "actions": [
+    {
+      "name": "grip",
+      "localized_name": "Grip",
+      "type": "float",
+      "path": "/input/squeeze/value"
+    },
+    {
+      "name": "trigger",
+      "localized_name": "Trigger",
+      "type": "float",
+      "path": "/input/trigger/value"
+    },
+    {
+      "name": "joystick",
+      "localized_name": "Joystick",
+      "type": "vector2",
+      "path": "/input/thumbstick"
+    },
+    {
+      "name": "button_a",
+      "localized_name": "Button A",
+      "type": "boolean",
+      "path": "/input/a/click"
+    },
+    {
+      "name": "button_b",
+      "localized_name": "Button B",
+      "type": "boolean",
+      "paths": "/input/b/click"
+    },
+    {
+      "name": "joystick_button",
+      "localized_name": "Joystick Button",
+      "type": "boolean",
+      "path": "/input/thumbstick/click"
+    },
+    {
+      "name": "menu",
+      "localized_name": "Menu",
+      "type": "boolean",
+      "paths": {
+        "/user/hand/left": "/input/menu/click",
+        "/user/hand/right": "/input/system/click"
+      }
+    },
+    {
+      "name": "hand_pose",
+      "localized_name": "Hand Pose",
+      "type": "pose",
+      "path": "/input/grip/pose"
+    },
+    {
+      "name": "aim_pose",
+      "localized_name": "Aim Pose",
+      "type": "pose",
+      "path": "/input/aim/pose"
+    },
+    {
+      "name": "vibration",
+      "localized_name": "Vibration",
+      "type": "vibration",
+      "path": "/output/haptic"
+    }
+  ]
+}

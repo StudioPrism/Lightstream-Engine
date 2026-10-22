@@ -1,0 +1,54 @@
+{
+  "HasHumanSkin": false,
+  "HumanSkinModel": null,
+  "HumanSkinMaterial": null,
+  "HumanEyesMaterial": null,
+  "HumanSkinBodyGroups": 0,
+  "HumanSkinMaterialGroup": null,
+  "HumanSkinTags": null,
+  "Title": "Short Braids",
+  "Subtitle": "",
+  "Category": "HairLong",
+  "ConditionalModels": {},
+  "Tags": null,
+  "Model": "models/citizen_clothes/hair/hair_short_braids/models/hair_short_braids.vmdl",
+  "HumanAltModel": "models/citizen_clothes/hair/hair_short_braids/models/hair_short_braids_m_human.vmdl",
+  "HumanAltFemaleModel": null,
+  "SkinMaterial": null,
+  "EyesMaterial": null,
+  "MaterialGroup": "",
+  "HeelHeight": 0,
+  "SlotsUnder": "HeadTop",
+  "SlotsOver": 0,
+  "HideBody": 0,
+  "DeformationMode": "Normal",
+  "AllowTintSelect": true,
+  "TintSelection": {
+    "blend": "Linear",
+    "color": [
+      {
+        "t": 0,
+        "c": "1,1,1,1"
+      },
+      {
+        "t": 0.48931623,
+        "c": "0.45581,0.32349,0.22897,1"
+      },
+      {
+        "t": 1,
+        "c": "0,0,0,1"
+      }
+    ],
+    "alpha": []
+  },
+  "TintDefault": 0.8,
+  "SteamItemDefinitionId": null,
+  "Icon": {
+    "Path": "models/citizen_clothes/hair/hair_short_braids/hair_short_braids.clothing.png",
+    "Mode": "Eyes",
+    "UsePositionOffset": false,
+    "PositionOffset": "-12.8000002,0,-0.1000003"
+  },
+  "__references": [],
+  "__version": 0
+}

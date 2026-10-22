@@ -1,0 +1,46 @@
+{
+  "HasHumanSkin": false,
+  "HumanSkinModel": null,
+  "HumanSkinMaterial": null,
+  "HumanEyesMaterial": null,
+  "HumanSkinBodyGroups": 0,
+  "HumanSkinMaterialGroup": null,
+  "HumanSkinTags": null,
+  "Title": "Santa Jacket 2024",
+  "Subtitle": null,
+  "Category": "Coat",
+  "ConditionalModels": {},
+  "Tags": null,
+  "Model": "models/citizen_clothes/seasonal/2024/santa/santa_jacket/models/santa_jacket.vmdl",
+  "HumanAltModel": "models/citizen_clothes/seasonal/2024/santa/santa_jacket/models/santa_jacket_m_human.vmdl",
+  "HumanAltFemaleModel": null,
+  "SkinMaterial": null,
+  "EyesMaterial": null,
+  "MaterialGroup": null,
+  "HeelHeight": 0,
+  "SlotsUnder": "LeftArm, RightArm",
+  "SlotsOver": "LeftArm, RightArm",
+  "HideBody": "Chest",
+  "DeformationMode": "Normal",
+  "AllowTintSelect": false,
+  "TintSelection": {
+    "blend": "Linear",
+    "color": [
+      {
+        "t": 0.5,
+        "c": "1,1,1,1"
+      }
+    ],
+    "alpha": []
+  },
+  "TintDefault": 0.5,
+  "SteamItemDefinitionId": 849814,
+  "Icon": {
+    "Path": "models/citizen_clothes/seasonal/2024/santa/santajacket.clothing.png",
+    "Mode": "Chest",
+    "UsePositionOffset": false,
+    "PositionOffset": "-47.6000099,0,-2.29999995"
+  },
+  "__references": [],
+  "__version": 0
+}

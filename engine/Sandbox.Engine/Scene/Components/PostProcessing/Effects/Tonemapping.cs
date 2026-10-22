@@ -1,0 +1,136 @@
+﻿using Sandbox.Rendering;
+using System.Text.Json.Nodes;
+
+namespace Sandbox;
+
+/// <summary>
+/// Applies a tonemapping effect to the camera.
+/// </summary>
+[Title( "Tone Mapping" )]
+[Category( "Post Processing" )]
+[Icon( "exposure" )]
+public class Tonemapping : BasePostProcess<Tonemapping>
+{
+	/// <summary>
+	/// Options to select a tonemapping algorithm to use for color grading.
+	/// </summary>
+	public enum TonemappingMode
+	{
+		/// <summary>
+		/// John Hable's filmic tonemapping algorithm.
+		/// Matches the default curve Source 2 uses based on Uncharted 2.
+		/// </summary>
+		HableFilmic = 1,
+		/// <summary>
+		/// The most realistic tonemapper at handling bright light, desaturating light as it becomes brighter.
+		/// This is slightly more expensive than other options.
+		/// </summary>
+		ACES,
+		/// <summary>
+		/// Reinhard's tonemapper, which is a simple and fast tonemapper.
+		/// </summary>
+		ReinhardJodie,
+		/// <summary>
+		/// Linear tonemapper, only applies autoexposure.
+		/// </summary>
+		Linear,
+		/// <summary>
+		/// Similar to ACES - very realistic, but handles lower and higher brightness ranges better.
+		/// Uses the Punchy AgX look.
+		/// </summary>
+		AgX
+	}
+
+	public enum ExposureColorSpaceEnum
+	{
+		RGB,
+		Luminance
+	}
+
+	/// <summary>
+	/// Which tonemapping algorithm to use for color grading.
+	/// </summary>
+	[Property] public TonemappingMode Mode { get; set; } = TonemappingMode.HableFilmic;
+
+	[ShowIf( nameof( Mode ), TonemappingMode.HableFilmic )]
+	[Property] public ExposureColorSpaceEnum ExposureMethod { get; set; } = ExposureColorSpaceEnum.RGB;
+
+	private static Material Shader = Material.FromShader( "shaders/tonemapping/tonemapping.shader" );
+
+	public override void Render()
+	{
+		UpdateExposure( Camera );
+
+		Attributes.SetComboEnum( "D_TONEMAPPING", Mode );
+		Attributes.SetComboEnum( "D_EXPOSUREMETHOD", ExposureMethod );
+
+		var blit = BlitMode.WithBackbuffer( Shader, Stage.Tonemapping, 0 );
+		Blit( blit, "Tonemapping" );
+	}
+
+	//
+	// All of this auto exposure stuff should be it's own component
+	// It's used by tonemapping, not part of it
+	//
+	[Property, Group( "Auto Exposure" )]
+	public bool AutoExposureEnabled { get; set; } = true;
+
+	[Property, Group( "Auto Exposure" ), Range( 0.0f, 3.0f ), ShowIf( nameof( AutoExposureEnabled ), true )]
+	public float MinimumExposure { get; set; } = 1.0f;
+
+	[Property, Group( "Auto Exposure" ), Range( 0.0f, 5.0f ), ShowIf( nameof( AutoExposureEnabled ), true )]
+	public float MaximumExposure { get; set; } = 3.0f;
+
+	[Property, Group( "Auto Exposure" ), Range( -5.0f, 5.0f ), ShowIf( nameof( AutoExposureEnabled ), true )]
+	public float ExposureCompensation { get; set; } = 0.0f;
+
+	[Property, Group( "Auto Exposure" ), Range( 1.0f, 10.0f ), ShowIf( nameof( AutoExposureEnabled ), true )]
+	public float Rate { get; set; } = 1.0f;
+
+	void UpdateExposure( CameraComponent camera )
+	{
+		if ( !camera.IsValid() ) return;
+
+		camera.AutoExposure.Enabled = AutoExposureEnabled;
+		camera.AutoExposure.Compensation = GetWeighted( x => x.ExposureCompensation, 0 );
+		camera.AutoExposure.MinimumExposure = GetWeighted( x => x.MinimumExposure, 1 );
+		camera.AutoExposure.MaximumExposure = GetWeighted( x => x.MaximumExposure, 3 );
+		camera.AutoExposure.Rate = GetWeighted( x => x.Rate, 1 );
+	}
+
+	public override int ComponentVersion => 3;
+
+	/// <summary>
+	/// Remove Exposure Bias
+	/// this doesn't make much sense since it's tied to only HableFilmic and does the same thing as ExposureCompensation
+	/// </summary>
+	[Expose, JsonUpgrader( typeof( Tonemapping ), 3 )]
+	static void Upgrader_v3( JsonObject obj )
+	{
+		if ( obj.TryGetPropertyValue( "Mode", out var mode ) )
+		{
+			if ( mode.ToString() != "HableFilmic" )
+				return;
+		}
+
+		if ( obj.TryGetPropertyValue( "ExposureBias", out var exposureBias ) && obj.TryGetPropertyValue( "ExposureCompensation", out var exposureCompensation ) )
+		{
+			obj["ExposureCompensation"] = ((float)exposureBias * 0.5f) + ((float)exposureCompensation);
+		}
+	}
+
+	/// <summary>
+	/// Remap the old "Legacy" mode to HableFilmic 
+	/// </summary>
+	[Expose, JsonUpgrader( typeof( Tonemapping ), 2 )]
+	static void Upgrader_v2( JsonObject obj )
+	{
+		// Remap the old "Legacy" mode to HableFilmic
+		if ( obj.TryGetPropertyValue( "Mode", out var mode ) )
+		{
+			if ( mode.ToString() == "Legacy" )
+				obj["Mode"] = (int)TonemappingMode.HableFilmic;
+		}
+	}
+
+}

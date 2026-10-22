@@ -1,0 +1,531 @@
+﻿using System.IO;
+using Sandbox.Utility;
+using System.Net;
+using System.Threading;
+
+namespace Sandbox;
+
+internal static partial class PackageManager
+{
+	/// <summary>
+	/// Describes a package that is currently mounted. Mounted packages are shared between client, server and editor.
+	/// We keep track of which host is using which package using Tags.
+	/// </summary>
+	public class ActivePackage : ICompileReferenceProvider
+	{
+		public Package Package { get; private set; }
+		public BaseFileSystem FileSystem { get; private set; }
+
+		public PackageFileSystem PackageFileSystem { get; private set; }
+
+		public BaseFileSystem AssemblyFileSystem { get; private set; }
+
+		/// <summary>
+		/// The project settings folder
+		/// </summary>
+		public BaseFileSystem ProjectSettings { get; private set; }
+
+		/// <summary>
+		/// The project's localization folder
+		/// </summary>
+		public BaseFileSystem Localization { get; private set; }
+
+		public HashSet<string> Tags { get; } = new( StringComparer.OrdinalIgnoreCase );
+
+		internal static async Task<ActivePackage> Create( Package package, CancellationToken token, PackageLoadOptions options )
+		{
+			var o = new ActivePackage();
+			o.Package = package;
+
+			if ( package is LocalPackage localPackage )
+			{
+				// A local package mounts it's project's filesystems (don't use them directly!)
+				o.FileSystem = new AggregateFileSystem();
+				o.FileSystem.Mount( localPackage.Project.CodeFileSystem );
+				o.FileSystem.Mount( localPackage.Project.AssetsFileSystem );
+
+				o.ProjectSettings = new AggregateFileSystem();
+				o.ProjectSettings.Mount( localPackage.Project.ProjectSettingsFileSystem );
+
+				o.Localization = new AggregateFileSystem();
+				o.Localization.Mount( localPackage.Project.LocalizationFileSystem );
+
+				o.AssemblyFileSystem = new AggregateFileSystem();
+
+				if ( Application.IsStandalone )
+				{
+					var binPath = Path.Combine( localPackage.Project.GetRootPath(), ".bin" );
+					System.IO.Directory.CreateDirectory( binPath );
+					o.AssemblyFileSystem.CreateAndMount( binPath );
+				}
+				else
+				{
+					o.AssemblyFileSystem.Mount( localPackage.AssemblyFileSystem );
+				}
+
+			}
+			else
+			{
+				await o.DownloadAsync( token, options );
+			}
+
+			ActivePackages.Add( o );
+
+			o.Mount( options.ReloadResources );
+
+			return o;
+		}
+
+		public void AddContextTag( string tag )
+		{
+			Tags.Add( tag );
+
+			// this tag just became active
+			OnPackageInstalledToContext?.Invoke( this, tag );
+		}
+
+		public void RemoveContextTag( string tag )
+		{
+			Tags.Remove( tag );
+		}
+
+		/// <summary>
+		/// Set the filesystem up from this downloaded asset
+		/// </summary>
+		private async Task DownloadAsync( CancellationToken token, PackageLoadOptions options )
+		{
+			Assert.True( Package.IsRemote );
+
+			PackageFileSystem = await Package.Download( token, options );
+
+			if ( PackageFileSystem is null )
+			{
+				throw new WebException( $"Unable to download package '{Package.FullIdent}'" );
+			}
+
+			//
+			// Mount downloaded filesystem as our main filesystem
+			//
+			FileSystem = new AggregateFileSystem();
+			FileSystem.Mount( PackageFileSystem );
+
+			//
+			// Mount localization data from this package
+			//
+			Localization = new AggregateFileSystem();
+			if ( FileSystem.DirectoryExists( "localization" ) )
+			{
+				// Mount as a subsystem of the package's FileSystem
+				Localization.Mount( FileSystem.CreateSubSystem( "localization" ) );
+			}
+
+			//
+			// Same for ProjectSettings. Empty if the package hasn't got the folder, so callers get
+			// a filesystem with nothing in it rather than a null.
+			//
+			ProjectSettings = new AggregateFileSystem();
+			if ( FileSystem.DirectoryExists( "ProjectSettings" ) )
+			{
+				ProjectSettings.Mount( FileSystem.CreateSubSystem( "ProjectSettings" ) );
+			}
+
+			//
+			// Mount assembly from this package
+			//
+			AssemblyFileSystem = new AggregateFileSystem();
+			if ( FileSystem.DirectoryExists( ".bin" ) )
+			{
+				// Mount as a subsystem of the package's FileSystem
+				AssemblyFileSystem.Mount( FileSystem.CreateSubSystem( ".bin" ) );
+			}
+
+			MemoryFileSystem dllFs;
+
+			if ( CompilesOnBackend() )
+			{
+				// The dlls built for exactly our engine version. With code archives, anything short of that (failed,
+				// still compiling, unreachable) leaves them unmounted and the install compiles the archives here.
+				// Without any there's nothing else to run, so wait out the compile.
+				var hasArchives = HasCodeArchives();
+				(dllFs, var error) = await DownloadCompiledDllAsync( waitForCompile: !hasArchives, token );
+
+				if ( dllFs is null && !hasArchives )
+					throw new System.Exception( $"Couldn't get the code for '{Package.FullIdent}': {error}" );
+			}
+			else
+			{
+				dllFs = await DownloadBinDllsAsync( Package.Revision, token );
+			}
+
+			if ( dllFs != null )
+			{
+				AssemblyFileSystem.Mount( dllFs );
+			}
+		}
+
+		/// <summary>
+		/// The backend compiles every package's code apart from libraries and tools, which their consumers compile.
+		/// </summary>
+		private bool CompilesOnBackend()
+		{
+			if ( Backend.Package is null || Package.Revision is not { VersionId: > 0 } )
+				return false;
+
+			if ( Package.TypeName is "library" or "tool" )
+				return false;
+
+			return HasManifestDlls() || HasCodeArchives();
+		}
+
+		/// <summary>
+		/// How long one request to the backend for the compile can take. It answers Pending itself after ~20s.
+		/// </summary>
+		static readonly TimeSpan CompiledDllTimeout = TimeSpan.FromSeconds( 60 );
+
+		/// <summary>
+		/// How long to wait before asking again while it compiles, when the backend doesn't say.
+		/// </summary>
+		static readonly TimeSpan CompiledDllRetry = TimeSpan.FromSeconds( 10 );
+
+		/// <summary>
+		/// The package's dlls compiled by the backend against our engine version - its own and any libraries it bundles -
+		/// queueing the compile if nobody has asked for it yet. With <paramref name="waitForCompile"/> it keeps asking
+		/// until the compile is done, otherwise a compile that's still going counts as no dlls. Null dlls, and why, when
+		/// the compile failed, or the backend can't be reached and we haven't fetched them before.
+		/// </summary>
+		private async Task<(MemoryFileSystem Dlls, string Error)> DownloadCompiledDllAsync( bool waitForCompile, CancellationToken token )
+		{
+			var ident = Package.FullIdent;
+			var revision = Package.Revision.VersionId;
+			var engineVersion = Sandbox.Engine.Protocol.Api;
+
+			// A revision's dlls for a version never change, so the last answer is good for installing offline
+			var cacheKey = $"dlls.{ident}.{revision}.{engineVersion}";
+
+			ManifestSchema.File[] files;
+
+			try
+			{
+				LoadingScreen.Subtitle = "Fetching compiled code";
+
+				while ( true )
+				{
+					using var timeout = CancellationTokenSource.CreateLinkedTokenSource( token );
+					timeout.CancelAfter( CompiledDllTimeout );
+
+					var response = await Backend.Package.GetDll( ident, revision, engineVersion, timeout.Token );
+
+					if ( response.Content is { Status: "Compiled", Dlls.Length: > 0 } result )
+					{
+						files = result.Dlls.Select( x => new ManifestSchema.File { Url = x.Url, Crc = x.Crc, Size = x.Size, Path = x.Path } ).ToArray();
+						Services.ServiceCache.WriteDisk( cacheKey, files );
+						break;
+					}
+
+					var pending = response.Content?.Status == "Pending";
+					var reason = pending ? "it's still compiling" : $"{(int)response.StatusCode} {response.Content?.Error ?? response.Error?.Content}";
+
+					if ( !pending || !waitForCompile )
+					{
+						Log.Info( $"No compiled dll for {ident} on engine version {engineVersion} ({reason})" );
+						return (null, reason);
+					}
+
+					LoadingScreen.Subtitle = "Waiting for the server to compile it";
+					await Task.Delay( response.Headers.RetryAfter?.Delta ?? CompiledDllRetry, token );
+				}
+			}
+			catch ( Exception e ) when ( !token.IsCancellationRequested )
+			{
+				if ( !Services.ServiceCache.TryReadDisk( cacheKey, out files ) )
+				{
+					Log.Warning( e, $"Couldn't fetch the compiled dll for {ident} ({e.Message})" );
+					return (null, e.Message);
+				}
+			}
+			finally
+			{
+				LoadingScreen.Subtitle = null;
+			}
+
+			var memFs = new MemoryFileSystem();
+
+			foreach ( var file in files )
+			{
+				byte[] bytes;
+
+				try
+				{
+					LoadingScreen.Subtitle = System.IO.Path.GetFileName( file.Path );
+					bytes = await GetCachedDllAsync( file, token );
+				}
+				catch ( Exception e ) when ( !token.IsCancellationRequested )
+				{
+					Log.Warning( e, $"Couldn't download the compiled {file.Path} for {ident} ({e.Message})" );
+					return (null, $"couldn't download {file.Path}");
+				}
+				finally
+				{
+					LoadingScreen.Subtitle = null;
+				}
+
+				// All or nothing - compiling the code archives brings its own copy of every assembly
+				if ( bytes is null || Crc64.FromBytes( bytes ) != Convert.ToUInt64( file.Crc, 16 ) )
+				{
+					Log.Warning( $"Compiled {file.Path} for {ident} didn't download intact" );
+					return (null, $"{file.Path} didn't download intact");
+				}
+
+				memFs.WriteAllBytes( System.IO.Path.GetFileName( file.Path ), bytes );
+			}
+
+			return (memFs, null);
+		}
+
+		private static async Task<MemoryFileSystem> DownloadBinDllsAsync( Package.IRevision revision, CancellationToken token )
+		{
+			var files = revision?.Manifest?.Files;
+			if ( files is null ) return null;
+
+			var dllFiles = files
+				.Where( f => f.Path.StartsWith( ".bin/", StringComparison.OrdinalIgnoreCase ) &&
+							 f.Path.EndsWith( ".dll", StringComparison.OrdinalIgnoreCase ) )
+				.ToArray();
+
+			if ( dllFiles.Length == 0 ) return null;
+
+			var memFs = new MemoryFileSystem();
+
+			foreach ( var file in dllFiles )
+			{
+				token.ThrowIfCancellationRequested();
+				LoadingScreen.Subtitle = System.IO.Path.GetFileName( file.Path );
+
+				var bytes = await GetCachedDllAsync( file, token );
+				if ( bytes is not null )
+				{
+					memFs.WriteAllBytes( System.IO.Path.GetFileName( file.Path ), bytes );
+				}
+			}
+
+			LoadingScreen.Subtitle = null;
+			return memFs;
+		}
+
+		/// <summary>
+		/// The dll's bytes from the download cache, fetched into it first when they aren't there or
+		/// don't match the manifest's crc. The bytes still go through access control before they load.
+		/// </summary>
+		private static async Task<byte[]> GetCachedDllAsync( ManifestSchema.File file, CancellationToken token )
+		{
+			var crc = Convert.ToUInt64( file.Crc, 16 );
+			var cachePath = AssetDownloadCache.GetAbsolutePath( file.Path, crc );
+
+			if ( System.IO.File.Exists( cachePath ) )
+			{
+				var cached = await System.IO.File.ReadAllBytesAsync( cachePath, token );
+				if ( Crc64.FromBytes( cached ) == crc )
+					return cached;
+			}
+
+			var bytes = await Sandbox.Utility.Web.GrabFile( file.Url, token );
+			if ( bytes is not null && Crc64.FromBytes( bytes ) == crc )
+			{
+				AssetDownloadCache.StoreFile( file.Path, crc, bytes );
+			}
+
+			return bytes;
+		}
+
+		internal bool HasPrecompiledDlls()
+		{
+			return AssemblyFileSystem?.FindFile( "/", "*.dll", true ).Any() ?? false;
+		}
+
+		internal bool HasManifestDlls()
+		{
+			var files = Package.Revision?.Manifest?.Files;
+			return files?.Any( f => f.Path.StartsWith( ".bin/", StringComparison.OrdinalIgnoreCase ) && f.Path.EndsWith( ".dll", StringComparison.OrdinalIgnoreCase ) ) ?? false;
+		}
+
+		internal bool HasCodeArchives()
+		{
+			return FileSystem.FindFile( "/", "*.cll", true ).Any();
+		}
+
+		/// <summary>
+		/// Fallback for remote packages that ship code archives (.cll) but no precompiled dlls.
+		/// Compiles the archives locally and mounts the resulting assemblies onto
+		/// <see cref="AssemblyFileSystem"/>, matching how <see cref="DownloadBinDllsAsync"/>
+		/// exposes manifest dlls, so the normal load path picks them up.
+		/// </summary>
+		internal async Task<bool> CompileCodeArchive()
+		{
+			// get all the code archives
+			var codeArchives = FileSystem.FindFile( "/", "*.cll", true ).ToArray();
+
+			// It's okay for packages not to have code archives, but return as a fail
+			if ( codeArchives.Length == 0 )
+				return false;
+
+			var analytic = new Api.Events.EventRecord( "package.compile" );
+			analytic.SetValue( "package", Package.FullIdent );
+			analytic.SetValue( "version", Package.Revision?.VersionId );
+			analytic.SetValue( "archives", codeArchives );
+
+			using var group = new CompileGroup( Package.Ident );
+			group.AccessControl = PackageManager.AccessControl;
+			group.ReferenceProvider = this;
+
+			using ( analytic.ScopeTimer( "LoadArchives" ) )
+			{
+				foreach ( var file in codeArchives )
+				{
+					var bytes = await FileSystem.ReadAllBytesAsync( file );
+					if ( bytes is null || bytes.Length <= 1 )
+						throw new System.Exception( "Couldn't load code archive - error opening" );
+					// Deserialize to a code archive
+					var archive = new CodeArchive( bytes );
+					// Create a compiler for it
+					var compiler = group.GetOrCreateCompiler( archive.CompilerName );
+					compiler.UpdateFromArchive( archive );
+					LoadingScreen.Subtitle = System.IO.Path.GetFileName( file );
+					await Task.Yield();
+				}
+			}
+
+			// Compile that bad boy
+			using ( analytic.ScopeTimer( "Compile" ) )
+			{
+				LoadingScreen.Subtitle = null;
+				await group.BuildAsync();
+				await Task.Yield();
+			}
+
+			if ( !group.BuildResult.Success )
+			{
+				// Add an analytic so we can track these failures on the backend
+				var er = new Api.Events.EventRecord( "package.compile.error" );
+				er.SetValue( "package", Package.FullIdent );
+				er.SetValue( "version", Package.Revision?.VersionId );
+				er.SetValue( "errors", group.BuildResult.BuildDiagnosticsString( Microsoft.CodeAnalysis.DiagnosticSeverity.Error ) );
+				er.Submit();
+
+				return false;
+			}
+
+			analytic.SetValue( "Diagnostics", group.BuildResult.Diagnostics
+												.Where( x => x.Severity > Microsoft.CodeAnalysis.DiagnosticSeverity.Warning )
+												.Select( x => new
+												{
+													x.Severity,
+													x.Location?.SourceTree?.FilePath,
+													x.Location?.GetLineSpan().StartLinePosition,
+													Message = x.GetMessage()
+												} )
+												.ToArray() );
+
+			// Should be successful
+			Assert.True( group.BuildResult.Success );
+
+			using ( analytic.ScopeTimer( "Write" ) )
+			{
+				var memFs = new MemoryFileSystem();
+				// Copy the compiled assemblies to the assembly filesystem, flat, so they load
+				// exactly like manifest-downloaded precompiled dlls.
+				foreach ( var assembly in group.BuildResult.Output )
+				{
+					Log.Trace( $"WRITE {assembly.Compiler.AssemblyName}.dll" );
+					memFs.WriteAllBytes( $"{assembly.Compiler.AssemblyName}.dll", assembly.AssemblyData );
+					LoadingScreen.Subtitle = assembly.Compiler.AssemblyName;
+					await Task.Yield();
+				}
+
+				AssemblyFileSystem ??= new AggregateFileSystem();
+				AssemblyFileSystem.Mount( memFs );
+			}
+
+			LoadingScreen.Subtitle = null;
+
+			analytic.Submit();
+
+			return true;
+		}
+
+		private void Mount( bool reloadResources = true )
+		{
+			MountedFileSystem.Mount( FileSystem );
+
+			if ( reloadResources )
+			{
+				// Reload any already resident resources with the ones we've just mounted
+				NativeEngine.g_pResourceSystem.ReloadSymlinkedResidentResources();
+			}
+
+			// Sandbox.FileSystem.Mounted.Mount( FileSystem );
+
+			// this only makes sense if the package is a local package
+			// Engine.SearchPath.Add( AbsolutePath, "GAME", true );
+		}
+
+		/// <summary>
+		/// Called to unmount and remove this package from being active
+		/// </summary>
+		public void Delete()
+		{
+			MountedFileSystem.UnMount( FileSystem );
+
+			// Make sure we unmount the package from the global filesystem, so that any other packages that might have been mounted on top of it don't get broken.
+			Sandbox.FileSystem.Mounted?.UnMount( FileSystem );
+
+			FileSystem.Dispose();
+			FileSystem = default;
+
+			PackageFileSystem?.Dispose();
+			PackageFileSystem = null;
+
+			AssemblyFileSystem.Dispose();
+			AssemblyFileSystem = null;
+
+			// Ours as well - for a local package these are wrappers around the project's
+			// filesystems, and the project keeps those
+			ProjectSettings?.Dispose();
+			ProjectSettings = null;
+
+			Localization?.Dispose();
+			Localization = null;
+
+			// Reload any resident resources that were just unmounted (they shouldn't be used & will appear as an error, or a local variant)
+			NativeEngine.g_pResourceSystem.ReloadSymlinkedResidentResources();
+		}
+
+		public Microsoft.CodeAnalysis.PortableExecutableReference Lookup( string reference )
+		{
+			// we can't do anything unless it's in a package
+			if ( !reference.StartsWith( "package." ) )
+				return default;
+
+			var targetAssemblyName = $"{reference}.dll";
+			Log.Trace( $"ActivePackage: Looking for reference: {targetAssemblyName}" );
+
+			//
+			// Do any of the active packages have this dll?
+			//
+			foreach ( var package in ActivePackages )
+			{
+				if ( package == this )
+					continue;
+
+				// TODO - maybe we should filter to make sure the package has the same tag as us?
+
+				var found = package.AssemblyFileSystem.FindFile( "/", targetAssemblyName, true ).FirstOrDefault();
+				if ( found == null ) continue;
+
+				var bytes = package.AssemblyFileSystem.ReadAllBytes( found ).ToArray();
+				return Microsoft.CodeAnalysis.MetadataReference.CreateFromImage( bytes );
+			}
+
+			return default;
+		}
+	}
+}

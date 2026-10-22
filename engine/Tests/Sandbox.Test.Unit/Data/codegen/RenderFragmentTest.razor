@@ -1,0 +1,21 @@
+﻿@namespace Sandbox.Test.Generated
+@using Sandbox.UI
+
+<root>
+
+    <Panel>
+        <Template:ChildContent>
+            <span>Hello!</span>
+            <span>This is a variable!</span>
+        </Template:ChildContent>
+    </Panel>
+
+    <div>@ChildContent</div>
+
+</root>
+
+
+@code
+{
+    public RenderFragment ChildContent;
+}

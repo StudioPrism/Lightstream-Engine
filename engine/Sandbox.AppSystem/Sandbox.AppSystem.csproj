@@ -1,0 +1,32 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <VersionPrefix>1.0.1</VersionPrefix>
+    <TargetFramework>net10.0</TargetFramework>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <AssemblyName>Sandbox.AppSystem</AssemblyName>
+    <PackageId>Sandbox.AppSystem</PackageId>
+    <OutputPath>..\..\game\bin\managed</OutputPath>
+    <NoWarn>1701;1702;1591</NoWarn>
+	<LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sandbox.GameInstance\Sandbox.GameInstance.csproj" />
+    <ProjectReference Include="..\Sandbox.Menu\Sandbox.Menu.csproj" />
+    <ProjectReference Include="..\Sandbox.SceneRenderer\Sandbox.SceneRenderer.csproj" />
+    <ProjectReference Include="..\Sandbox.Tools\Sandbox.Tools.csproj" />
+  </ItemGroup>
+
+  
+</Project>

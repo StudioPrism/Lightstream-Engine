@@ -1,0 +1,9 @@
+{
+  "action_sets": [
+    {
+      "name": "default",
+      "localized_name": "Default",
+      "controllers": [ "oculus_touch.json", "valve_knuckles.json" ]
+    }
+  ]
+}

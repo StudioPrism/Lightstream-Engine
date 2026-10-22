@@ -1,0 +1,46 @@
+<!-- dmx encoding keyvalues2_noids 4 format vtex 1 -->
+"CDmeVtex"
+{
+	"m_inputTextureArray" "element_array" 
+	[
+		"CDmeInputTexture"
+		{
+			"m_name" "string" "inputTexture0"
+			"m_fileName" "string" "materials\\skybox\\tests\\src\\lightingtest_default.exr"
+			"m_colorSpace" "string" "linear"
+			"m_fileExt" "string" ""
+			"m_nMinBitsPerChannel" "int" "-1"
+			"m_typeString" "string" "CUBE"
+			"m_imageProcessorArray" "element_array" 
+			[
+			]
+		}
+	]
+	"m_outputTypeString" "string" "CUBE"
+	"m_outputFormat" "string" "BC6H"
+	"m_outputClearColor" "vector4" "0 0 0 0"
+	"m_nOutputMinDimension" "int" "0"
+	"m_nOutputMaxDimension" "int" "0"
+	"m_textureOutputChannelArray" "element_array" 
+	[
+		"CDmeTextureOutputChannel"
+		{
+			"m_inputTextureArray" "string_array" 
+			[
+				"inputTexture0"
+			]
+			"m_srcChannels" "string" "rgba"
+			"m_dstChannels" "string" "rgba"
+			"m_mipAlgorithm" "CDmeImageProcessor"
+			{
+				"m_algorithm" "string" "Box"
+				"m_stringArg" "string" ""
+				"m_vFloat4Arg" "vector4" "0 0 0 0"
+			}
+			"m_outputColorSpace" "string" "linear"
+		}
+	]
+	"m_vClamp" "vector3" "0 0 0"
+	"m_bNoLod" "bool" "0"
+}
+

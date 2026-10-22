@@ -1,0 +1,659 @@
+﻿using System.Collections.Concurrent;
+using NativeEngine;
+using Sandbox.Engine;
+using Sandbox.Internal;
+using Steamworks;
+using Steamworks.Data;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Threading.Channels;
+using System.Threading;
+
+namespace Sandbox.Network;
+
+/// <summary>
+/// Full mesh over a Steam lobby. The owner is only who a joiner handshakes with; afterwards it follows the host.
+/// </summary>
+internal class SteamLobbySocket : NetworkSocket, ILobby
+{
+	public ConcurrentDictionary<ulong, SteamLobbyConnection> Connections { get; } = new();
+
+	internal int NetworkChannel => (int)(Id % int.MaxValue);
+
+	/// <summary>
+	/// The connection to the lobby owner. This is who we handshake with when joining.
+	/// </summary>
+	Connection ownerConnection;
+
+	ulong Id => SteamLobby.Id;
+
+	NetworkSystem System;
+	bool _disposed;
+
+	/// <summary>
+	/// The SteamId of the owner of this lobby.
+	/// </summary>
+	public ulong HostSteamId => Owner.Id;
+
+	/// <summary>
+	/// The SteamId of the host of this lobby.
+	/// </summary>
+	public ulong LobbySteamId => SteamLobby.Id;
+
+	/// <summary>
+	/// How many cunts are in this lobby.
+	/// </summary>
+	public int LobbyMemberCount => SteamLobby.MemberCount;
+
+	/// <summary>
+	/// Current owner of this lobby.
+	/// </summary>
+	internal Steamworks.Friend Owner;
+
+	/// <summary>
+	/// The underlying Steam lobby.
+	/// </summary>
+	internal Lobby SteamLobby;
+
+	/// <summary>
+	/// Current config of this lobby.
+	/// </summary>
+	LobbyConfig config;
+
+	internal override bool SupportsHostMigration => true;
+
+	/// <summary>
+	/// Who the host lets in. Lobbies without it predate privacy being enforced, so assume the worst.
+	/// </summary>
+	internal LobbyPrivacy Privacy => Enum.TryParse<LobbyPrivacy>( SteamLobby.GetData( "access_level" ), out var privacy ) ? privacy : LobbyPrivacy.Private;
+
+	/// <summary>
+	/// Should we tell our Steam friends how to join? Anyone with the lobby id can, so only when the host would let them in.
+	/// </summary>
+	internal bool AdvertiseJoin => Privacy switch
+	{
+		LobbyPrivacy.Public => true,
+		LobbyPrivacy.FriendsOnly => Owner.IsMe,
+		_ => false
+	};
+
+	/// <summary>
+	/// Groups everyone in this game together in the Steam friends list, without giving away the lobby id.
+	/// </summary>
+	internal string PresenceGroup => Privacy == LobbyPrivacy.Public ? $"{LobbySteamId}" : SteamLobby.GetData( "presence_group" );
+
+	public SteamLobbySocket( Lobby lobby )
+	{
+		SteamLobby = lobby;
+
+		UpdateConnections();
+		UpdateOwnerFromLobby();
+
+		LobbyManager.Register( this );
+		((ILobby)this).OnLobbyUpdated();
+	}
+
+	private void LoadConfig( LobbyConfig config )
+	{
+		this.config = config;
+
+		SteamLobby.SetData( "destroy_when_host_leaves", config.DestroyWhenHostLeaves.ToString() );
+
+		if ( !string.IsNullOrEmpty( config.Name ) )
+		{
+			Networking.UpdateServerName( config.Name );
+			SteamLobby.SetData( "name", config.Name );
+		}
+		else
+		{
+			Networking.UpdateServerName( $"{Utility.Steam.PersonaName}" );
+			SteamLobby.SetData( "auto_name", "1" );
+			SteamLobby.SetData( "name", $"{Utility.Steam.PersonaName}" );
+		}
+
+		SteamLobby.SetData( "hdn", config.Hidden ? "1" : "0" );
+	}
+
+	public static async Task<SteamLobbySocket> Create( LobbyConfig config )
+	{
+		var lobbyType = config.Privacy switch
+		{
+			LobbyPrivacy.Public => LobbyType.Public,
+			LobbyPrivacy.FriendsOnly => LobbyType.FriendsOnly,
+			_ => LobbyType.Private
+		};
+
+		var steamlobby = await SteamMatchmaking.CreateLobbyAsync( lobbyType, config.MaxPlayers );
+		if ( !steamlobby.HasValue )
+		{
+			Log.Warning( "An error occured when creating the lobby!" );
+			return null;
+		}
+
+		// Wait for the lobby to exist
+		for ( int i = 0; i < 200; i++ )
+		{
+			if ( LobbyManager.ActiveLobbies.Contains( steamlobby.Value.Id ) )
+				break;
+
+			await Task.Delay( 10 );
+		}
+
+		if ( !LobbyManager.ActiveLobbies.Contains( steamlobby.Value.Id ) )
+		{
+			Log.Warning( "Didn't enter lobby in a reasonable time!" );
+			steamlobby.Value.Leave();
+			return null;
+		}
+
+		var lobby = new SteamLobbySocket( steamlobby.Value );
+		lobby.LoadConfig( config );
+
+		foreach ( var (k, v) in Networking.ServerData )
+		{
+			steamlobby.Value.SetData( k, v );
+		}
+
+		Networking.MaxPlayers = config.MaxPlayers;
+
+		steamlobby.Value.SetData( "lobby_type", "scene" );
+		steamlobby.Value.SetData( "dev", Application.IsEditor ? "1" : "0" );
+		steamlobby.Value.SetData( "game", Application.GameIdent );
+		steamlobby.Value.SetData( "revision", $"{Application.GamePackage?.Revision?.VersionId}" );
+		steamlobby.Value.SetData( "api", Protocol.Api.ToString() );
+		steamlobby.Value.SetData( "protocol", Protocol.Network.ToString() );
+		steamlobby.Value.SetData( "buildid", $"{Application.Version}" );
+		steamlobby.Value.SetData( "access_level", $"{config.Privacy}" );
+		steamlobby.Value.SetData( "presence_group", $"{Guid.NewGuid():N}" );
+
+		return lobby;
+	}
+
+	public static async Task<(RoomEnter Response, SteamLobbySocket Socket, string Error)> Join( ulong lobbyId, CancellationToken token = default )
+	{
+		var result = await SteamMatchmaking.JoinLobbyAsync( lobbyId );
+		if ( result.Response != RoomEnter.Success || result.Lobby is not { } lobby )
+		{
+			return (result.Response, null, $"Steam could not join the lobby: {result.Response} ({(int)result.Response}).");
+		}
+
+		if ( token.IsCancellationRequested )
+		{
+			lobby.Leave();
+			return default;
+		}
+
+		for ( int i = 0; i < 200; i++ )
+		{
+			if ( token.IsCancellationRequested ) break;
+			if ( LobbyManager.ActiveLobbies.Contains( lobby.Id ) )
+				break;
+
+			await Task.Delay( 10 );
+		}
+
+		if ( token.IsCancellationRequested || !LobbyManager.ActiveLobbies.Contains( lobby.Id ) )
+		{
+			Log.Warning( "Didn't enter lobby in a reasonable time!" );
+			lobby.Leave();
+			return (default, null, "Steam accepted the lobby join, but lobby membership was not confirmed within 2 seconds.");
+		}
+
+		var socket = new SteamLobbySocket( lobby );
+		var timeout = Stopwatch.StartNew();
+
+		// Wait for the owner to show up or time out
+		while ( timeout.Elapsed.TotalSeconds < 5f )
+		{
+			if ( token.IsCancellationRequested ) break;
+			SteamNetwork.RunCallbacks();
+
+			if ( socket.ownerConnection is not null )
+				return (result.Response, socket, null);
+
+			await Task.Delay( 100 );
+		}
+
+		Log.Warning( $"Timed out connecting to lobby." );
+		socket.Dispose();
+		return (default, null, "Joined the Steam lobby, but its owner was not available within 5 seconds.");
+	}
+
+	internal override void Initialize( NetworkSystem networkSystem )
+	{
+		System = networkSystem;
+
+		foreach ( var c in Connections.Values )
+		{
+			OnClientConnect?.Invoke( c );
+		}
+
+		// Joining: the owner is who we handshake with
+		if ( !networkSystem.IsHost && ownerConnection is not null )
+		{
+			networkSystem.SetHostConnection( ownerConnection );
+		}
+	}
+
+	internal override void SetData( string key, string value )
+	{
+		SteamLobby.SetData( key, value );
+	}
+
+	internal override void SetServerName( string name )
+	{
+		SteamLobby.SetData( "auto_name", "0" );
+		SteamLobby.SetData( "name", name );
+	}
+
+	internal override void SetMapName( string name )
+	{
+		SteamLobby.SetData( "map", name );
+	}
+
+	internal override void OnHostChanged( Connection newHost )
+	{
+		if ( !Owner.IsMe )
+			return;
+
+		if ( newHost == Connection.Local )
+		{
+			var hostCount = (SteamLobby.GetData( "hostcount" )?.ToInt() ?? 0) + 1;
+			SteamLobby.SetData( "hostcount", hostCount.ToString() );
+			return;
+		}
+
+		if ( newHost is SteamLobbyConnection lobbyConnection )
+		{
+			SetOwner( lobbyConnection.Friend.Id );
+		}
+	}
+
+	private void SetOwner( ulong steamId )
+	{
+		// The new host publishes its own location once it owns the lobby.
+		SteamLobby.DeleteData( LobbyPing.MetadataKey );
+		SteamLobby.SetData( "_ownerid", $"{steamId}" );
+		SteamLobby.SetOwner( steamId );
+		Owner = new( steamId );
+	}
+
+	internal override void Dispose()
+	{
+		lock ( Networking.NetworkThreadLock )
+		{
+			if ( _disposed ) return;
+			_disposed = true;
+			LobbyManager.Unregister( this );
+			foreach ( var connection in Connections.Values ) connection.Dispose();
+			Connections.Clear();
+			SteamLobby.Leave();
+			OutgoingMessages.Writer.TryComplete();
+			while ( OutgoingMessages.Reader.TryRead( out var dropped ) ) dropped.Packet.Release();
+			IncomingMessages.Writer.TryComplete();
+			while ( IncomingMessages.Reader.TryRead( out _ ) ) { }
+		}
+	}
+
+	private struct IncomingMessage
+	{
+		public ulong SteamId { get; set; }
+		public byte[] Data { get; set; }
+	}
+
+	private struct OutgoingMessage
+	{
+		public SteamLobbyConnection Target { get; set; }
+		public NetPacket Packet { get; set; }
+		public int Flags { get; set; }
+	}
+
+	private Channel<OutgoingMessage> OutgoingMessages { get; } = Channel.CreateUnbounded<OutgoingMessage>();
+	private Channel<IncomingMessage> IncomingMessages { get; } = Channel.CreateUnbounded<IncomingMessage>();
+
+	/// <summary>
+	/// Enqueue a message to be sent on the networking thread.
+	/// </summary>
+	internal void SendMessage( SteamLobbyConnection target, NetPacket packet, int flags )
+	{
+		// Ours until the networking thread has handed it to Steam
+		packet.AddReference();
+
+		if ( !OutgoingMessages.Writer.TryWrite( new() { Target = target, Packet = packet, Flags = flags } ) )
+			packet.Release();
+	}
+
+	/// <summary>
+	/// Process any incoming messages from Steam networking and enqueue them to be
+	/// handled by the main thread.
+	/// </summary>
+	/// <param name="net"></param>
+	/// <param name="channel"></param>
+	private unsafe void ProcessIncomingMessages( in ISteamNetworkingMessages net, int channel )
+	{
+		var ptr = stackalloc IntPtr[Networking.ReceiveBatchSize];
+		var maxIncoming = Networking.ReceiveBatchSizePerTick;
+		var totalReceived = 0;
+
+		while ( true )
+		{
+			var count = net.ReceiveMessagesOnChannel( channel, (IntPtr)ptr, Networking.ReceiveBatchSize );
+			if ( count == 0 ) return;
+
+			for ( var i = 0; i < count; i++ )
+			{
+				var msg = Unsafe.Read<SteamNetworkMessage>( (void*)ptr[i] );
+
+				var data = GC.AllocateUninitializedArray<byte>( msg.Size );
+				Marshal.Copy( (IntPtr)msg.Data, data, 0, data.Length );
+
+				var m = new IncomingMessage
+				{
+					SteamId = msg.IdentitySteamId,
+					Data = data
+				};
+
+				IncomingMessages.Writer.TryWrite( m );
+				net.ReleaseMessage( ptr[i] );
+			}
+
+			totalReceived += count;
+
+			if ( maxIncoming > 0 && totalReceived >= maxIncoming )
+				return;
+		}
+	}
+
+	/// <summary>
+	/// Send any queued outgoing messages via Steam Networking API.
+	/// </summary>
+	private unsafe void ProcessOutgoingMessage( ISteamNetworkingMessages net, in OutgoingMessage msg )
+	{
+		// A queued packet belongs to this connection, even if the same Steam user rejoins.
+		var target = msg.Target;
+
+		// Steam copies it, so it's released whatever happens
+		try
+		{
+			if ( !target.IsValid ) return;
+
+			fixed ( byte* d = msg.Packet.Buffer )
+			{
+				var result = net.SendMessageToUser( target.Friend.Id, (IntPtr)d, msg.Packet.Length, msg.Flags, NetworkChannel );
+				if ( result == 1 )
+				{
+					target.LastSendError = null;
+					target.MessagesSent++;
+					return;
+				}
+
+				var error = (Result)result;
+				if ( target.LastSendError != error )
+					Log.Warning( $"Steam send to {target.Friend.Id} in lobby {Id} failed: {error} ({result})." );
+				target.LastSendError = error;
+			}
+		}
+		finally
+		{
+			msg.Packet.Release();
+		}
+	}
+
+	/// <summary>
+	/// Send any queued outgoing messages and process any incoming messages to be queued for handling
+	/// on the main thread.
+	/// </summary>
+	internal override void ProcessMessagesInThread()
+	{
+		if ( _disposed ) return;
+		var net = Steam.SteamNetworkingMessages();
+		if ( !net.IsValid ) return;
+
+		var maxOutgoing = Networking.MaxOutgoingMessagesPerTick;
+		var outgoingCount = 0;
+
+		while ( OutgoingMessages.Reader.TryRead( out var msg ) )
+		{
+			ProcessOutgoingMessage( net, msg );
+
+			if ( maxOutgoing > 0 && ++outgoingCount >= maxOutgoing )
+				break;
+		}
+
+		ProcessIncomingMessages( net, NetworkChannel );
+	}
+
+	internal override void GetIncomingMessages( NetworkSystem.MessageHandler handler )
+	{
+		while ( IncomingMessages.Reader.TryRead( out var msg ) )
+		{
+			if ( !Connections.TryGetValue( msg.SteamId, out var connection ) )
+				continue;
+
+			connection.OnRawPacketReceived( msg.Data, handler );
+		}
+	}
+
+	void UpdateConnections()
+	{
+		if ( _disposed || Id == 0 || !LobbyManager.ActiveLobbies.Contains( Id ) )
+			return;
+
+		UpdateOwnerFromLobby();
+
+		var sw = Steam.SteamMatchmaking();
+		var cc = sw.GetNumLobbyMembers( Id );
+		var list = new List<ulong>();
+
+		for ( var i = 0; i < cc; i++ )
+		{
+			var member = sw.GetLobbyMemberByIndex( Id, i );
+			list.Add( member );
+			AddConnection( member );
+		}
+
+		var toRemove = Connections.Values.Where( x => !list.Contains( x.Friend.Id ) ).ToArray();
+
+		foreach ( var c in toRemove )
+		{
+			OnClientDisconnect?.Invoke( c );
+			Connections.Remove( c.Friend.Id, out _ );
+			c.Dispose();
+		}
+	}
+
+	private void AddConnection( ulong v )
+	{
+		if ( Connections.ContainsKey( v ) )
+			return;
+
+		var friend = new Friend( (long)v );
+		if ( friend.IsMe )
+			return;
+
+		Log.Trace( $"Lobby connection from {friend.Name} / {friend.Id}!" );
+
+		var c = new SteamLobbyConnection( this, friend );
+		Connections.TryAdd( v, c );
+
+		OnClientConnect?.Invoke( c );
+	}
+
+	RealTimeUntil timeUntilPingLocationUpdate;
+	ulong pingLocationOwner;
+
+	/// <summary>
+	/// Refreshes the host's relay marker periodically, retrying sooner while Steam is still measuring.
+	/// </summary>
+	void UpdatePingLocation()
+	{
+		if ( pingLocationOwner == Owner.Id && timeUntilPingLocationUpdate > 0 )
+			return;
+
+		pingLocationOwner = Owner.Id;
+		var utils = Steam.SteamNetworkingUtils();
+		var location = utils.IsValid ? utils.GetLocalPingLocationString() : null;
+		var metadata = LobbyPing.CreateMetadata( Owner.Id, location );
+
+		if ( metadata is null )
+		{
+			SteamLobby.DeleteData( LobbyPing.MetadataKey );
+			timeUntilPingLocationUpdate = 5;
+		}
+		else
+		{
+			SteamLobby.SetData( LobbyPing.MetadataKey, metadata );
+			timeUntilPingLocationUpdate = 60;
+		}
+	}
+
+	internal override void Tick( NetworkSystem networkSystem )
+	{
+		if ( _disposed ) return;
+		FollowHost();
+
+		if ( !Owner.IsMe )
+		{
+			pingLocationOwner = 0;
+			return;
+		}
+
+		// Should we automatically update the name of this lobby? Should be the case
+		// if a lobby name was not provided during creation.
+		if ( SteamLobby.GetData( "auto_name" ) == "1" )
+		{
+			Networking.UpdateServerName( $"{Utility.Steam.PersonaName}" );
+			SteamLobby.SetData( "name", $"{Utility.Steam.PersonaName}" );
+		}
+
+		SteamLobby.SetData( "_ownerid", $"{Utility.Steam.SteamId}" );
+		SteamLobby.SetData( "map", Networking.MapName );
+		UpdatePingLocation();
+	}
+
+	/// <summary>
+	/// Steam made us owner but we're not the host: pass ownership to the host.
+	/// </summary>
+	private void FollowHost()
+	{
+		if ( System is null || !Owner.IsMe || System.IsHost )
+			return;
+
+		if ( System.HostConnection is SteamLobbyConnection host )
+		{
+			SetOwner( host.Friend.Id );
+		}
+	}
+
+	internal override void OnSessionFailed( SteamId steamId, int reasonCode, string reason )
+	{
+		if ( Connections.TryGetValue( steamId, out var connection ) )
+		{
+			connection.SessionFailure = new( ConnectionState.ProblemDetectedLocally, reasonCode, reason );
+			Log.Warning( $"Steam session failed in lobby {Id}, peer {steamId}: {connection.SessionFailure}" );
+			return;
+		}
+
+		Log.Warning( $"SteamLobbySocket - Invalid Network Session (Recipient: {steamId})" );
+	}
+
+	internal string DescribeConnectionFailure( double elapsed )
+	{
+		var peer = System?.HostConnection as SteamLobbyConnection ?? ownerConnection as SteamLobbyConnection;
+		var steamId = peer?.Friend.Id ?? HostSteamId;
+		var status = SteamSessionStatus.Read( steamId );
+		// Steam may already have discarded a failed session; retain the callback's reason.
+		if ( status.State == ConnectionState.None && peer?.SessionFailure is { } failure ) status = failure;
+		var sendError = peer?.LastSendError is { } lastError
+			? $"Last failed Steam send: {lastError} ({(int)lastError})." : null;
+		var message = status.DescribeTimeout( elapsed, sendError );
+		if ( status.Reason == 0 && peer?.SessionFailure is { Reason: not 0 } previousFailure )
+			message += $"\nLast Steam session failure ({previousFailure.Reason}): {previousFailure.Detail}";
+		var relay = Networking.GetSteamRelayStatus( out var relayDetail );
+		Log.Warning( $"Join failed: lobby {Id}, host {steamId}, relay {relay} ({relayDetail}). {message}" );
+		if ( relay != SteamNetworkingAvailability.Current ) message += $"\nSteam relay: {relay}. {relayDetail}";
+		return message;
+	}
+
+	internal override void OnConnectionInfoUpdated( NetworkSystem networkSystem )
+	{
+		foreach ( var info in networkSystem.ConnectionInfo.All )
+		{
+			SetConnectionId( info.Value.SteamId, info.Value );
+		}
+	}
+
+	/// <summary>
+	/// Make sure this steamid has this connection id
+	/// </summary>
+	private void SetConnectionId( ulong steamId, ConnectionInfo info )
+	{
+		if ( Connections.TryGetValue( steamId, out var connection ) )
+		{
+			connection.UpdateFromInfo( info );
+		}
+	}
+
+	void UpdateOwnerFromLobby()
+	{
+		Owner = SteamLobby.Owner;
+		ownerConnection = Owner.IsMe ? Connection.Local : Connections.GetValueOrDefault( Owner.Id );
+	}
+
+	ulong ILobby.Id => SteamLobby.Id;
+
+	void ILobby.OnMemberEnter( Friend friend )
+	{
+		Log.Trace( $"OnLobbyMemberEnter {friend}!" );
+		UpdateConnections();
+	}
+
+	void ILobby.OnMemberLeave( Friend friend )
+	{
+		Log.Trace( $"OnLobbyMemberLeave {friend}!" );
+		UpdateConnections();
+	}
+
+	void ILobby.OnMemberUpdated( Friend friend )
+	{
+		// nothing to do
+	}
+
+	void ILobby.OnLobbyUpdated()
+	{
+		UpdateOwnerFromLobby();
+
+		if ( System is null )
+			return;
+
+		FollowHost();
+
+		if ( System.IsHost )
+			return;
+
+		// Until we're in the game the owner is the host; if they change mid-connect we start over
+		if ( Connection.Local.State == Connection.ChannelState.Connected )
+			return;
+
+		if ( ownerConnection is null || ownerConnection == Connection.Local )
+			return;
+
+		if ( System.HostConnection == ownerConnection )
+			return;
+
+		var hadHost = System.HostConnection is not null;
+		System.SetHostConnection( ownerConnection );
+
+		if ( !hadHost )
+			return;
+
+		Log.Info( "Lobby owner changed while connecting - restarting handshake" );
+		System.RestartHandshake();
+	}
+
+	void ILobby.OnMemberMessage( Friend friend, ByteStream stream )
+	{
+		throw new NotImplementedException();
+	}
+}

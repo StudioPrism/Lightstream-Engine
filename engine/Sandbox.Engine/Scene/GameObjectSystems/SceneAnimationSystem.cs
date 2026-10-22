@@ -1,0 +1,209 @@
+﻿using Editor;
+using Sandbox.Utility;
+using System.Collections.Concurrent;
+
+namespace Sandbox;
+
+[Expose]
+public sealed class SceneAnimationSystem : GameObjectSystem<SceneAnimationSystem>
+{
+	private HashSetEx<SkinnedModelRenderer> SkinnedRenderers { get; } = new();
+
+	/// <summary>
+	/// Incremented once per frame when bones are updated. Lets per-frame bone caches - like
+	/// <see cref="SkinnedModelRenderer.BoneWorldTransforms"/> - know when they're stale without re-reading
+	/// the skeleton more than once per frame.
+	/// </summary>
+	public int BoneFrame { get; private set; }
+
+	internal void AddRenderer( SkinnedModelRenderer renderer )
+	{
+		SkinnedRenderers.Add( renderer );
+	}
+
+	internal void RemoveRenderer( SkinnedModelRenderer renderer )
+	{
+		SkinnedRenderers.Remove( renderer );
+	}
+
+	private readonly HashSet<SkinnedModelRenderer> _editorForceBindPose = [];
+	private readonly HashSet<SkinnedModelRenderer> _editorBindPoseTargets = [];
+
+	private ConcurrentQueue<GameTransform> ChangedTransforms { get; } = new();
+
+	// Reusable lists to avoid per-frame allocations from Parallel.ForEach with IEnumerable<T>.
+	// Parallel.ForEach on IEnumerable uses a dynamic partitioner that allocates KeyValuePair<long, T>[]
+	// chunks internally; passing an IList<T> uses the static range partitioner instead.
+	private readonly List<SkinnedModelRenderer> _rootRenderers = new();
+	private readonly List<SkinnedModelRenderer> _boneMergeRoots = new();
+	private readonly List<SkinnedModelRenderer> _physRenderers = new();
+
+	private static int _animThreadCount = Math.Max( 1, Environment.ProcessorCount - 1 );
+
+	private static ParallelOptions _animParallelOptions = new()
+	{
+		MaxDegreeOfParallelism = _animThreadCount
+	};
+
+	public SceneAnimationSystem( Scene scene ) : base( scene )
+	{
+		Listen( Stage.UpdateBones, 0, UpdateAnimation, "UpdateAnimation" );
+		Listen( Stage.FinishUpdate, 0, FinishUpdate, "FinishUpdate" );
+		Listen( Stage.PhysicsStep, 0, PhysicsStep, "PhysicsStep" );
+	}
+
+	void UpdateAnimation()
+	{
+		// Bump once per frame, before any FinishUpdate-stage consumer reads bone snapshots.
+		BoneFrame++;
+
+		using ( PerformanceStats.Timings.Animation.Scope() )
+		{
+			_rootRenderers.Clear();
+			_boneMergeRoots.Clear();
+
+			// Nothing animating - no bones to update, no decode caches worth maintaining
+			if ( SkinnedRenderers.Count == 0 )
+				return;
+
+			CollectEditorBindForcePoses();
+
+			foreach ( var renderer in SkinnedRenderers.EnumerateLocked() )
+			{
+				// Drive viseme morphs from any speaking voice before bones/morphs update
+				if ( renderer.VoiceActive )
+					renderer.UpdateVoice();
+
+				if ( renderer.IsRootRenderer )
+					_rootRenderers.Add( renderer );
+
+				if ( !renderer.BoneMergeTarget.IsValid() && renderer.HasBoneMergeChildren )
+					_boneMergeRoots.Add( renderer );
+			}
+
+			// Skip out if we have a parent that is a skinned model, because we need to move relative to that
+			// and their bones haven't been worked out yet. They will get worked out after our parent is.
+			// Use a load-balanced partitioner: work per root is highly uneven (clothed characters have many
+			// bone-merged children), so static range partitioning would cause severe thread idle time.
+			System.Threading.Tasks.Parallel.ForEach( Partitioner.Create( _rootRenderers, loadBalance: true ), _animParallelOptions, ProcessRenderer );
+
+			_editorForceBindPose.Clear();
+
+			// This is a good time to maintain decode caches
+			// Will copy local caches to the global cache and handle LRU eviction
+			// Can do this in a background task as nothing is touching these caches until next frame
+			Task.Run( g_pAnimationSystemUtils.MaintainDecodeCaches );
+
+			// Now merge any descendants without allocating per-merge delegates
+			System.Threading.Tasks.Parallel.ForEach( Partitioner.Create( _boneMergeRoots, loadBalance: true ), _animParallelOptions, renderer => renderer.MergeDescendants( ChangedTransforms ) );
+
+			while ( ChangedTransforms.TryDequeue( out var tx ) )
+			{
+				tx.TransformChanged( true );
+			}
+
+			//
+			// Run events in the main thread
+			//
+			foreach ( var x in SkinnedRenderers.EnumerateLocked() )
+			{
+				x.DispatchEvents();
+			}
+		}
+	}
+
+	/// <summary>
+	/// Collects all the bind pose previews from the editor selection and adds them to the _editorForceBindPose set.
+	/// </summary>
+	private void CollectEditorBindForcePoses()
+	{
+		_editorForceBindPose.Clear();
+		_editorBindPoseTargets.Clear();
+
+		// Important! editor only!
+		if ( !Scene.IsEditor ) return;
+
+		// And active editor only!
+		if ( Scene.Editor is not { IsActive: true } editor )
+			return;
+
+		foreach ( var selected in editor.Selection )
+		{
+			if ( selected is GameObject gameObject && gameObject.IsValid() )
+			{
+				foreach ( var component in gameObject.Components.GetAll() )
+				{
+					TryAddEditorForceBindPose( component );
+				}
+			}
+			else if ( selected is Component component )
+			{
+				TryAddEditorForceBindPose( component );
+			}
+		}
+
+		foreach ( var target in _editorBindPoseTargets )
+		{
+			if ( !target.IsValid() || target.Scene != Scene || !target.Active )
+			{
+				continue;
+			}
+
+			_editorForceBindPose.Add( target.RootBoneMergeTarget );
+		}
+
+		_editorBindPoseTargets.Clear();
+	}
+
+	void TryAddEditorForceBindPose( Component component )
+	{
+		if ( !component.IsValid() ) return;
+		if ( component.Scene != Scene ) return;
+		if ( component is not ISkinnedModelEditor preview ) return;
+
+		preview.AddBindPosePreviewTargets( _editorBindPoseTargets );
+	}
+
+	void ProcessRenderer( SkinnedModelRenderer renderer )
+	{
+		if ( !renderer.IsValid() || !renderer.Enabled )
+			return;
+
+		bool forceBindPose = _editorForceBindPose.Count > 0 && _editorForceBindPose.Contains( renderer.RootBoneMergeTarget );
+
+		if ( renderer.AnimationUpdate( forceBindPose ) )
+		{
+			ChangedTransforms.Enqueue( renderer.Transform );
+		}
+
+		foreach ( var child in renderer.SkinnedChildren )
+		{
+			ProcessRenderer( child );
+		}
+	}
+
+	void FinishUpdate()
+	{
+		using var _ = PerformanceStats.Timings.Animation.Scope();
+
+		foreach ( var renderer in SkinnedRenderers.EnumerateLocked() )
+		{
+			renderer.FinishUpdate();
+		}
+	}
+
+	void PhysicsStep()
+	{
+		using var _ = PerformanceStats.Timings.Animation.Scope();
+
+		_physRenderers.Clear();
+
+		foreach ( var renderer in SkinnedRenderers.EnumerateLocked() )
+		{
+			if ( renderer.Physics != null )
+				_physRenderers.Add( renderer );
+		}
+
+		System.Threading.Tasks.Parallel.ForEach( Partitioner.Create( _physRenderers, loadBalance: true ), _animParallelOptions, renderer => renderer.Physics.Step() );
+	}
+}

@@ -1,0 +1,460 @@
+﻿using System.Runtime.InteropServices;
+
+namespace Editor.MeshEditor;
+
+partial class VertexPaintTool
+{
+	public override Widget CreateToolSidebar()
+	{
+		return new VertexPaintToolWidget( this );
+	}
+
+	public class VertexPaintToolWidget : ToolSidebarWidget
+	{
+		readonly Widget _blendRow;
+		readonly Widget _channelsWidget;
+		readonly ControlSheetRow _paintRow;
+		readonly Label _selectionCountLabel;
+		readonly VertexPaintTool _tool;
+		readonly Widget _noiseSettingsWidget;
+		readonly Widget _occlusionSettingsWidget;
+		readonly Widget _curvatureSettingsWidget;
+		readonly Button _fillButton;
+
+		ColorPicker _colorPicker;
+
+		[Shortcut( "vertexpainttool.OpenColorPicker", "F", typeof( SceneViewWidget ) )]
+		void OpenColorPicker()
+		{
+			if ( _tool.Mode != PaintMode.Color )
+				return;
+
+			if ( _colorPicker.IsValid() )
+			{
+				_colorPicker.Focus();
+				return;
+			}
+
+			var picker = ColorPicker.OpenColorPopup( _tool.Color, c => _tool.Color = c );
+			picker.HasAlpha = false;
+			picker.IsHDR = false;
+
+			_colorPicker = picker;
+		}
+
+		[Shortcut( "vertexpainttool.togglepaintmode", "M", typeof( SceneViewWidget ) )]
+		void TogglePaintMode()
+		{
+			_tool.Mode = _tool.Mode == PaintMode.Blend ? PaintMode.Color : PaintMode.Blend;
+			UpdateModeVisibility( _tool.Mode );
+		}
+
+		[Shortcut( "vertexpainttool.floodfill", "Backspace", typeof( SceneViewWidget ) )]
+		void FloodFill() => _tool.FillSelection();
+
+		[Shortcut( "vertexpainttool.invertfill", "SHIFT+Backspace", typeof( SceneViewWidget ) )]
+		void InvertFill() => _tool.InvertSelection();
+
+		[Shortcut( "vertexpainttool.resetpaint", "CTRL+Backspace", typeof( SceneViewWidget ) )]
+		void ResetPaint() => _tool.ResetPaintData();
+
+		public VertexPaintToolWidget( VertexPaintTool tool ) : base()
+		{
+			_tool = tool;
+
+			AddTitle( "Vertex Paint Tool", "brush" );
+
+			var so = tool.GetSerialized();
+
+			{
+				var group = AddGroup( "Paint On" );
+				var control = ControlWidget.Create( so.GetProperty( nameof( tool.LimitMode ) ) );
+				control.FixedHeight = Theme.ControlHeight;
+				group.Add( control );
+
+				_selectionCountLabel = new Label( this );
+				_selectionCountLabel.SetStyles( "color: #888; font-size: 11px; margin-left: 12px; margin-top: 2px; margin-bottom: 2px;" );
+				group.Add( _selectionCountLabel );
+
+				group.Add( ControlSheetRow.Create( so.GetProperty( nameof( tool.LimitToActiveMaterial ) ) ) );
+				group.Add( ControlSheetRow.Create( so.GetProperty( nameof( tool.PaintBackfacing ) ) ) );
+				group.Add( ControlSheetRow.Create( so.GetProperty( nameof( tool.ScaleWithDistance ) ) ) );
+			}
+			{
+				var group = AddGroup( "Painting" );
+
+				var modeProp = so.GetProperty( nameof( tool.Mode ) );
+				var modeRow = ControlSheetRow.Create( modeProp );
+				group.Add( modeRow );
+
+				_blendRow = new Widget( this );
+				_blendRow.Layout = Layout.Row();
+				_blendRow.Layout.Margin = 4;
+				_blendRow.Layout.Spacing = 4;
+
+				_channelsWidget = new Widget( this );
+				_channelsWidget.Layout = Layout.Column();
+				_channelsWidget.Layout.Margin = 4;
+				_channelsWidget.Layout.Spacing = 4;
+
+				var material = tool.Tool.ActiveMaterial;
+				var blendCount = GetVertexPaintLayerCount( material );
+
+				var masks = new[]
+				{
+					(BlendMask.A, new Vector4( 0, 0, 0, 1 ), "0" ),
+					(BlendMask.R, new Vector4( 1, 0, 0, 0 ), "1" ),
+					(BlendMask.G, new Vector4( 0, 1, 0, 0 ), "2" ),
+					(BlendMask.B, new Vector4( 0, 0, 1, 0 ), "3" ),
+				};
+
+				var blendWidgets = new List<BlendWidget>();
+
+				if ( blendCount == 0 )
+				{
+					var label = new Label( "Active material does not support vertex painting." );
+					label.WordWrap = true;
+					_blendRow.Layout.Add( label );
+				}
+				else
+				{
+					var size = blendCount switch
+					{
+						1 => 96,
+						2 => 64,
+						3 => 52,
+						_ => 42
+					};
+					for ( int i = 0; i < blendCount + 1 && i < masks.Length; i++ )
+					{
+						var (maskId, maskVec, layerLabel) = masks[i];
+						var pixmap = CreateBlendPixmap( material, 42, maskVec );
+
+						var w = new BlendWidget
+						{
+							FixedWidth = size,
+							FixedHeight = size + BlendWidget.LabelHeight,
+							Pixmap = CreateBlendPixmap( tool.Tool.ActiveMaterial, size, maskVec ),
+							Selected = i == 1,
+							Label = layerLabel
+						};
+
+						var channel = i;
+
+						w.OnClicked = ( b ) =>
+						{
+							foreach ( var bw in blendWidgets )
+								bw.Selected = false;
+
+							w.Selected = true;
+
+							if ( b ) tool.SetChannelDisableOther( channel );
+							else tool.SetChannelEnableOther( channel );
+
+							Update();
+						};
+
+						blendWidgets.Add( w );
+						_blendRow.Layout.Add( w );
+
+						if ( maskId == BlendMask.R ) _channelsWidget.Layout.Add( new ChannelWidget( so.GetProperty( nameof( tool.ChannelR ) ), channel ) );
+						if ( maskId == BlendMask.G ) _channelsWidget.Layout.Add( new ChannelWidget( so.GetProperty( nameof( tool.ChannelG ) ), channel ) );
+						if ( maskId == BlendMask.B ) _channelsWidget.Layout.Add( new ChannelWidget( so.GetProperty( nameof( tool.ChannelB ) ), channel ) );
+						if ( maskId == BlendMask.A ) _channelsWidget.Layout.Add( new ChannelWidget( so.GetProperty( nameof( tool.ChannelA ) ), channel ) );
+					}
+				}
+
+				_paintRow = ControlSheetRow.Create( so.GetProperty( nameof( tool.Color ) ) );
+
+				group.Add( ControlSheetRow.Create( so.GetProperty( nameof( tool.Radius ) ) ) );
+				group.Add( ControlSheetRow.Create( so.GetProperty( nameof( tool.Strength ) ) ) );
+				group.Add( ControlSheetRow.Create( so.GetProperty( nameof( tool.Hardness ) ) ) );
+				group.Add( _blendRow );
+				group.Add( _paintRow );
+				group.Add( _channelsWidget );
+
+				modeProp.OnChanged += ( e ) => UpdateModeVisibility( tool.Mode );
+			}
+
+			{
+				var group = AddGroup( "Fill Options", collapsible: true );
+
+				_fillButton = new Button( "Flood Fill", "format_color_fill" );
+				_fillButton.ToolTip = "Fill the current selection with the active color/blend";
+				_fillButton.Clicked = () => tool.FillSelection();
+				group.Add( _fillButton );
+
+				var _invertButton = new Button( "Invert Selection", "flip" );
+				_invertButton.ToolTip = "Invert the current selection";
+				_invertButton.Clicked = () => tool.InvertSelection();
+				group.Add( _invertButton );
+
+				var resetButton = new Button( "Reset Paint Data", "format_color_reset" );
+				resetButton.ToolTip = "Reset the selection back to default";
+				resetButton.Clicked = () => tool.ResetPaintData();
+				group.Add( resetButton );
+
+				var fillModeProp = so.GetProperty( nameof( tool.FillMode ) );
+				group.Add( ControlSheetRow.Create( fillModeProp ) );
+
+				var scaleProp = so.GetProperty( nameof( tool.NoiseScale ) );
+				var seedProp = so.GetProperty( nameof( tool.NoiseSeed ) );
+				var contrastProp = so.GetProperty( nameof( tool.NoiseContrast ) );
+
+				_noiseSettingsWidget = new Widget( this );
+				_noiseSettingsWidget.Layout = Layout.Column();
+				_noiseSettingsWidget.Layout.Spacing = 2;
+				_noiseSettingsWidget.Layout.Add( ControlSheetRow.Create( scaleProp ) );
+				_noiseSettingsWidget.Layout.Add( ControlSheetRow.Create( seedProp ) );
+				_noiseSettingsWidget.Layout.Add( ControlSheetRow.Create( contrastProp ) );
+
+				var noisePreview = new NoisePreviewWidget( tool, this ) { FixedHeight = 96 };
+				_noiseSettingsWidget.Layout.AddSpacingCell( 8 );
+				_noiseSettingsWidget.Layout.Add( noisePreview );
+				group.Add( _noiseSettingsWidget );
+
+				_occlusionSettingsWidget = new Widget( this );
+				_occlusionSettingsWidget.Layout = Layout.Column();
+				_occlusionSettingsWidget.Layout.Spacing = 2;
+				_occlusionSettingsWidget.Layout.Add( ControlSheetRow.Create( so.GetProperty( nameof( tool.OcclusionRadius ) ) ) );
+				group.Add( _occlusionSettingsWidget );
+
+				_curvatureSettingsWidget = new Widget( this );
+				_curvatureSettingsWidget.Layout = Layout.Column();
+				_curvatureSettingsWidget.Layout.Spacing = 2;
+				_curvatureSettingsWidget.Layout.Add( ControlSheetRow.Create( so.GetProperty( nameof( tool.CurvatureAngle ) ) ) );
+				group.Add( _curvatureSettingsWidget );
+
+				scaleProp.OnChanged += ( e ) => noisePreview.Update();
+				seedProp.OnChanged += ( e ) => noisePreview.Update();
+				contrastProp.OnChanged += ( e ) => noisePreview.Update();
+
+				fillModeProp.OnChanged += ( e ) => UpdateFillModeVisibility( tool.FillMode );
+			}
+
+			{
+				var group = AddGroup( "Visualization", collapsible: true );
+				group.Add( ControlSheetRow.Create( so.GetProperty( nameof( tool.ShowVerts ) ) ) );
+				group.Add( ControlSheetRow.Create( so.GetProperty( nameof( tool.ShowSelection ) ) ) );
+			}
+
+			Layout.AddStretchCell();
+
+			AddShortcuts(
+				("Paint", "LMB"),
+				("Erase", "Ctrl+LMB"),
+				("Sample Color", "(Hold) V"),
+				("Adjust Radius", "Shift+MMB Drag"),
+				("Adjust Strength", "Ctrl+MMB ↕"),
+				("Adjust Hardness", "Ctrl+MMB ↔"),
+				("Add Selection", "Shift+RMB")
+			);
+
+			UpdateModeVisibility( tool.Mode );
+			UpdateFillModeVisibility( tool.FillMode );
+		}
+
+		static int GetVertexPaintLayerCount( Material material )
+		{
+			if ( !material.IsValid() )
+				return 0;
+
+			if ( material.Flags.GetInt( "VertexPaintUI5Layer" ) == 1 ) return 4;
+			if ( material.Flags.GetInt( "VertexPaintUI4Layer" ) == 1 ) return 3;
+			if ( material.Flags.GetInt( "VertexPaintUI3Layer" ) == 1 ) return 2;
+			if ( material.Flags.GetInt( "VertexPaintUI2Layer" ) == 1 ) return 1;
+
+			return 0;
+		}
+
+		void UpdateModeVisibility( PaintMode mode )
+		{
+			_blendRow.Visible = mode == PaintMode.Blend;
+			_channelsWidget.Visible = mode == PaintMode.Blend;
+			_paintRow.Visible = mode == PaintMode.Color;
+		}
+
+		void UpdateFillModeVisibility( PaintFillMode mode )
+		{
+			_noiseSettingsWidget.Visible = mode == PaintFillMode.Noise;
+			_occlusionSettingsWidget.Visible = mode == PaintFillMode.Occlusion;
+			_curvatureSettingsWidget.Visible = mode == PaintFillMode.Curvature;
+		}
+
+		[EditorEvent.Frame]
+		void UpdateSelectionCount()
+		{
+			if ( _tool.LimitMode == PaintLimitMode.Everything )
+			{
+				_selectionCountLabel.Visible = false;
+				return;
+			}
+
+			var count = _tool.LimitMode switch
+			{
+				PaintLimitMode.Objects => _tool._selectedMeshes.Count,
+				PaintLimitMode.Faces => _tool.GetSelectedElements<MeshFace>().Count(),
+				PaintLimitMode.Edges => _tool.GetSelectedElements<MeshEdge>().Count(),
+				PaintLimitMode.Vertices => _tool.GetSelectedElements<Editor.MeshEditor.MeshVertex>().Count(),
+				_ => 0
+			};
+
+			var name = _tool.LimitMode switch
+			{
+				PaintLimitMode.Objects => count == 1 ? "object" : "objects",
+				PaintLimitMode.Faces => count == 1 ? "face" : "faces",
+				PaintLimitMode.Edges => count == 1 ? "edge" : "edges",
+				PaintLimitMode.Vertices => count == 1 ? "vertex" : "vertices",
+				_ => "selected"
+			};
+
+			_selectionCountLabel.Visible = true;
+			_selectionCountLabel.Text = $"{count} {name} selected";
+		}
+
+		class ChannelWidget : ControlWidget
+		{
+			public ChannelWidget( SerializedProperty property, int channel ) : base( property )
+			{
+				if ( !property.TryGetAsObject( out var so ) ) return;
+
+				Layout = Layout.Row();
+				Layout.Add( Create( so.GetProperty( nameof( Channel.Enabled ) ) ) );
+				Layout.Add( new FloatControlWidget( so.GetProperty( nameof( Channel.Value ) ) ) { Label = $"{channel}" } );
+			}
+		}
+
+		class BlendWidget : Widget
+		{
+			public Pixmap Pixmap;
+			public bool Selected;
+			public string Label;
+			public Action<bool> OnClicked;
+
+			public const float LabelHeight = 20f;
+			const float Rounding = 4f;
+
+			public BlendWidget()
+			{
+				MouseTracking = true;
+				Cursor = CursorShape.Finger;
+			}
+
+			protected override void OnMousePress( MouseEvent e )
+			{
+				OnClicked?.Invoke( e.RightMouseButton );
+				e.Accepted = true;
+			}
+
+			protected override void OnPaint()
+			{
+				Paint.Antialiasing = true;
+
+				var rect = LocalRect;
+				var previewRect = new Rect( rect.Left, rect.Top, rect.Width, rect.Width );
+				var labelRect = new Rect( rect.Left, previewRect.Bottom, rect.Width, LabelHeight );
+
+				Paint.ClearBrush();
+				Paint.ClearPen();
+
+				Paint.Draw( previewRect.Shrink( 2 ), Pixmap );
+
+				Paint.ClearBrush();
+				if ( Selected )
+				{
+					Paint.SetPen( Theme.Primary, 2 );
+					Paint.DrawRect( previewRect.Shrink( 1 ), Rounding );
+				}
+				else if ( IsUnderMouse )
+				{
+					Paint.SetPen( Color.White.WithAlpha( 0.2f ), 1 );
+					Paint.DrawRect( previewRect.Shrink( 1 ), Rounding );
+				}
+
+				Paint.ClearBrush();
+				Paint.SetPen( Selected ? Color.White : Color.White.WithAlpha( 0.5f ) );
+				Paint.SetDefaultFont( 8, Selected ? 600 : 400 );
+				Paint.DrawText( labelRect, Label, TextFlag.CenterTop );
+			}
+		}
+
+		[StructLayout( LayoutKind.Sequential )]
+		struct MeshVertex( Vector3 position, Vector3 normal, Vector4 tangent, Vector2 texcoord, Color32 blend, Color32 color )
+		{
+			[VertexLayout.Position] public Vector3 Position = position;
+			[VertexLayout.Normal] public Vector3 Normal = normal;
+			[VertexLayout.Tangent] public Vector4 Tangent = tangent;
+			[VertexLayout.TexCoord] public Vector2 Texcoord = texcoord;
+			[VertexLayout.TexCoord( 4 )] public Color32 Blend = blend;
+			[VertexLayout.TexCoord( 5 )] public Color32 Color = color;
+		}
+
+		static Mesh CreatePlane( Color32 mask )
+		{
+			var material = Material.Load( "materials/dev/gray_grid_8.vmat" );
+			var mesh = new Mesh( material );
+			mesh.CreateVertexBuffer( 4, new[]
+			{
+				new MeshVertex( new Vector3( -50, -50, 0 ), Vector3.Up, new Vector4( 1, 0, 0, 1 ), new Vector2( 0, 0 ), mask, Color.White ),
+				new MeshVertex( new Vector3( 50, -50, 0 ), Vector3.Up,  new Vector4( 1, 0, 0, 1 ), new Vector2( 1, 0 ), mask, Color.White ),
+				new MeshVertex( new Vector3( 50, 50, 0 ), Vector3.Up,  new Vector4( 1, 0, 0, 1 ), new Vector2( 1, 1 ), mask, Color.White ),
+				new MeshVertex( new Vector3( -50, 50, 0 ), Vector3.Up,  new Vector4( 1, 0, 0, 1 ), new Vector2( 0, 1 ), mask, Color.White ),
+			} );
+			mesh.CreateIndexBuffer( 6, new[] { 0, 1, 2, 2, 3, 0 } );
+			mesh.Bounds = BBox.FromPositionAndSize( 0, 100 );
+
+			return mesh;
+		}
+
+		static Pixmap CreateBlendPixmap( Material material, Vector2 size, Vector4 mask )
+		{
+			var world = new SceneWorld();
+
+			var camera = new SceneCamera
+			{
+				BackgroundColor = Color.Black,
+				Ortho = true,
+				Rotation = Rotation.FromPitch( 90 ),
+				Position = Vector3.Up * 200,
+				OrthoHeight = 100,
+				World = world
+			};
+
+			var light = new SceneSpotLight( world )
+			{
+				Radius = 4000,
+				LightColor = Color.White * 0.7f,
+				Position = new Vector3( 0, 0, 100 ),
+				ConeOuter = 89,
+				ConeInner = 75,
+				QuadraticAttenuation = 5f,
+				ShadowsEnabled = true
+			};
+
+			light.Rotation = Rotation.From( 90, 0, 0 );
+
+			var mesh = CreatePlane( new Color( mask.x, mask.y, mask.z, mask.w ) );
+			var model = Model.Builder
+				.AddMesh( mesh )
+				.Create();
+
+			var obj = new SceneObject( world, model );
+			obj.Transform = new Transform
+			{
+				Position = Vector3.Zero,
+				Rotation = Rotation.From( 0, 90, 0 ),
+				Scale = new Vector3( 1, size.x / size.y, 1 )
+			};
+
+			obj.SetMaterialOverride( material );
+
+			var pixmap = new Pixmap( size );
+			camera.RenderToPixmap( pixmap );
+
+			world.Delete();
+			camera.Dispose();
+
+			return pixmap;
+		}
+	}
+}

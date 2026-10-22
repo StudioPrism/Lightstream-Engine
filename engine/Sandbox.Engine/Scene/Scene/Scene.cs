@@ -1,0 +1,545 @@
+﻿using Sandbox.Utility;
+using Sandbox.Volumes;
+using System.Text.Json.Serialization;
+
+namespace Sandbox;
+
+public partial class Scene : GameObject
+{
+	public bool IsEditor { get; private set; }
+
+	/// <summary>
+	/// Pause scene updates, rendering, UI and spatial audio without destroying their state.
+	/// Overlays, local audio and external async work remain active.
+	/// </summary>
+	internal bool IsSuspended { get; set; }
+
+	/// <summary>
+	/// A snapshot is currently creating objects whose map content it already supplies.
+	/// </summary>
+	internal bool IsLoadingSnapshot { get; private set; }
+
+	internal IDisposable LoadingSnapshotScope()
+	{
+		var previous = IsLoadingSnapshot;
+		IsLoadingSnapshot = true;
+		return new DisposeAction( () => IsLoadingSnapshot = previous );
+	}
+
+	bool _destroyed;
+	SceneWorld _sceneWorld;
+
+	/// <summary>
+	/// True if the scene world has been created. Reading <see cref="SceneWorld"/> creates
+	/// it - check this first when you only want to act on a world that already exists.
+	/// </summary>
+	internal bool HasSceneWorld => _sceneWorld is not null;
+
+	/// <summary>
+	/// True if the physics world has been created. Reading <see cref="PhysicsWorld"/> creates
+	/// it - check this first when you only want to act on a world that already exists.
+	/// </summary>
+	internal bool HasPhysicsWorld => _physicsWorld.IsValid();
+
+	/// <summary>
+	/// The scene world, holding this scene's renderables. Created on first access, so
+	/// scenes that never render anything (like prefab caches or tests) never create one.
+	/// </summary>
+	public SceneWorld SceneWorld
+	{
+		get
+		{
+			if ( _sceneWorld is null && !_destroyed )
+			{
+				_sceneWorld = new SceneWorld();
+			}
+
+			return _sceneWorld;
+		}
+		private set => _sceneWorld = value;
+	}
+
+	public SceneWorld DebugSceneWorld => gizmoInstance?.World;
+
+	[System.Obsolete( "Use Scene.Editor.HasUnsavedChanges" )]
+	public bool HasUnsavedChanges { get; private set; }
+
+	public GameResource Source { get; internal set; }
+
+	/// <summary>
+	/// For scenes within a hammer MapWorld, for action graph stack traces,
+	/// and so the editor knows the map must be saved when editing graphs from it.
+	/// </summary>
+	internal Facepunch.ActionGraphs.ISourceLocation OverrideSourceLocation { get; set; }
+
+	public GameObjectDirectory Directory { get; private set; }
+
+	Gizmo.Instance gizmoInstance = new();
+
+	[JsonIgnore]
+	[System.Obsolete( "please use the SceneInformation component" )]
+	public string Title { get; set; }
+
+	[JsonIgnore]
+	[System.Obsolete( "please use the SceneInformation component" )]
+	public string Description { get; set; }
+
+	/// <summary>
+	/// If true we'll additive load the system scene when this scene is loaded. Defaults
+	/// to true. You might want to disable this for specific scenes, like menu scenes etc.
+	/// </summary>
+	[Property]
+	public bool WantsSystemScene { get; set; } = true;
+
+	/// <summary>
+	/// Global render attributes accessible on any renderable in this Scene.
+	/// </summary>
+	public RenderAttributes RenderAttributes { get; }
+
+	private PhysicsWorld _physicsWorld;
+	private ScenePhysicsMode _physicsMode;
+
+	/// <summary>
+	/// Which physics simulation this scene runs. The physics world is built for one mode, so this
+	/// is chosen once when the scene is authored and can't be changed while the scene is running.
+	/// </summary>
+	[Property]
+	public ScenePhysicsMode PhysicsMode
+	{
+		get => _physicsMode;
+		set
+		{
+			if ( _physicsMode == value )
+				return;
+
+			// The editor picks this up through ReloadHash and rebuilds the scene. At runtime nothing
+			// reloads, and tearing down a live world would take every body in the scene with it.
+			if ( HasPhysicsWorld && !IsEditor )
+			{
+				Log.Warning( $"Can't change {nameof( PhysicsMode )} once the physics world exists - reload the scene instead" );
+				return;
+			}
+
+			_physicsMode = value;
+		}
+	}
+
+	internal bool Is2D => PhysicsMode == ScenePhysicsMode.Physics2D;
+
+	/// <summary>
+	/// Hash of scene settings that require a world reload when changed.
+	/// </summary>
+	internal int ReloadHash => HashCode.Combine( PhysicsMode );
+
+	public PhysicsWorld PhysicsWorld => _physicsWorld ??= CreatePhysicsWorld();
+
+	/// <summary>
+	/// Creates the physics world for this scene, matching <see cref="PhysicsMode"/>.
+	/// </summary>
+	PhysicsWorld CreatePhysicsWorld()
+	{
+		if ( PhysicsMode == ScenePhysicsMode.Physics2D )
+		{
+			var world = new PhysicsWorld2d
+			{
+				Gravity = Vector2.Down * 850,
+				Scene = this,
+				CollisionRules = ProjectSettings.Collision,
+			};
+
+			return world.Owner;
+		}
+		else
+		{
+			var world = new PhysicsWorld3d
+			{
+				Gravity = Vector3.Down * 850,
+				SimulationMode = PhysicsSimulationMode.Continuous,
+				DebugSceneWorld = DebugSceneWorld,
+				Scene = this,
+				CollisionRules = ProjectSettings.Collision,
+			};
+
+			return world.Owner;
+		}
+	}
+
+	protected Scene( bool isEditor ) : base( true, "Scene" )
+	{
+		_all.Add( this );
+
+		Directory = new GameObjectDirectory( this );
+
+		RenderAttributes = new();
+		IsEditor = isEditor;
+
+		if ( this is not PrefabCacheScene )
+		{
+			InitSystems();
+		}
+	}
+
+	public Scene() : this( false ) { }
+
+	~Scene()
+	{
+		MainThread.Queue( DestroyInternal );
+	}
+
+	/// <summary>
+	/// Returns true if this scene has not been destroyed
+	/// </summary>
+	public override bool IsValid => !_destroyed;
+
+	/// <summary>
+	/// Destroy this scene. After this you should never use it again.
+	/// </summary>
+	public override void Destroy()
+	{
+		DestroyInternal();
+	}
+
+	internal virtual void DestroyInternal()
+	{
+		_all.Remove( this );
+
+		// Clearing the object index now means we can save time
+		// because we don't have to do it for each object.
+		// Note that we can't do this in Clear because we don't want to
+		// remove any GameObjectSystem's from the index - because they're
+		// persistent between the clears.
+		ClearObjectIndex();
+
+		Clear();
+		ProcessDeletes();
+		ShutdownSystems();
+
+		GC.SuppressFinalize( this );
+
+		// the lazy world properties stop creating once this is set, so tearing
+		// down a world that was never created stays a no-op
+		_destroyed = true;
+
+		_physicsWorld?.Delete();
+		_physicsWorld = default;
+
+		SceneWorld?.Delete();
+		SceneWorld = default;
+
+		gizmoInstance?.Dispose();
+		gizmoInstance = default;
+
+		NavMesh?.Dispose();
+		NavMesh = default;
+
+		DisposeListeners();
+	}
+
+	public static Scene CreateEditorScene()
+	{
+		return new Scene( true );
+	}
+
+	/// <summary>
+	/// Create a GameObject on this scene. This doesn't require the scene to be the active scene.
+	/// </summary>
+	public GameObject CreateObject( bool enabled = true )
+	{
+		using ( Push() )
+		{
+			var go = new GameObject( enabled );
+			go.Enabled = enabled;
+			go.Parent = this;
+			return go;
+		}
+	}
+
+
+	/// <summary>
+	/// Push this scene as the active scene, for a scope
+	/// </summary>
+	public IDisposable Push()
+	{
+		return new ScenePushScope( this );
+	}
+
+	/// <summary>
+	/// <see cref="Push"/> without boxing the scope. Use with <c>using var</c>.
+	/// </summary>
+	internal ScenePushScope PushScope() => new( this );
+
+	/// <summary>
+	/// Collects anything inside into a batch group. A batchgroup is used with GameObject and Components to
+	/// make sure that their OnEnable/OnDisable and other callbacks are called in a deterministic order,
+	/// and that they can find each other during creation. <see cref="GameObject.NetworkSpawn()"/> calls will also be batched.
+	/// </summary>
+	public IDisposable BatchGroup()
+	{
+		var networkScope = SceneNetworkSystem.Instance?.NetworkSpawnBatch();
+		var callbackScope = CallbackBatch.Isolated();
+
+		return DisposeAction.Create( () =>
+		{
+			callbackScope?.Dispose();
+			networkScope?.Dispose();
+		} );
+	}
+
+	[System.Obsolete]
+	public void ClearUnsavedChanges()
+	{
+	}
+
+	internal override void OnHotload()
+	{
+		base.OnHotload();
+
+		SceneNetworkSystem.Instance?.OnHotload();
+
+		foreach ( var obj in Directory.AllGameObjects )
+		{
+			if ( obj == this ) continue;
+
+			obj.OnHotload();
+		}
+
+		foreach ( var obj in networkedObjects )
+		{
+			obj.OnHotload();
+		}
+
+		foreach ( var obj in systems.Values )
+		{
+			obj.OnHotload();
+		}
+
+		HotloadObjectIndex();
+	}
+
+	static Superluminal _renderTimer = new Superluminal( "Scene.Render", Color.Cyan );
+	static Superluminal _cameraRenderTimer = new Superluminal( "Camera", Color.Cyan );
+
+	internal void Render( SwapChainHandle_t swapChain, Vector2? size )
+	{
+		if ( IsSuspended ) return;
+
+		using var _renderScope = _renderTimer.Start();
+
+		PreCameraRender();
+
+		// Get all cameras sorted by render priority
+		var cameras = RentSortedCameras();
+		try
+		{
+			foreach ( var cc in cameras )
+			{
+				if ( cc.Active == false ) continue;
+				if ( cc.IsSceneEditorCamera ) continue;
+
+				using var _cam = _cameraRenderTimer.Start( cc.GameObject?.Name );
+				cc.AddToRenderList( swapChain, size );
+			}
+		}
+		finally
+		{
+			ReturnSortedCameras( cameras );
+		}
+	}
+
+	List<CameraComponent> _sortedCameraScratch;
+
+	/// <summary>
+	/// <see cref="Cameras"/> by priority, equal priorities in set order like OrderBy. A snapshot, since
+	/// rendering a camera can add or remove cameras. A nested call gets its own list.
+	/// </summary>
+	List<CameraComponent> RentSortedCameras()
+	{
+		var cameras = _sortedCameraScratch ?? new();
+		_sortedCameraScratch = null;
+
+		foreach ( var camera in Cameras )
+		{
+			var priority = camera.Priority;
+			int i = cameras.Count;
+			while ( i > 0 && cameras[i - 1].Priority > priority ) i--;
+			cameras.Insert( i, camera );
+		}
+
+		return cameras;
+	}
+
+	void ReturnSortedCameras( List<CameraComponent> cameras )
+	{
+		cameras.Clear();
+		_sortedCameraScratch = cameras;
+	}
+
+	internal void RenderEnvmaps()
+	{
+		if ( IsSuspended ) return;
+
+		// Can't render envmaps while already inside a render pass
+		if ( Graphics.IsActive )
+		{
+			if ( !Application.IsRetail ) Log.Error( "Attempted to render envmaps while inside a render pass!" );
+			return;
+		}
+
+		// We pre-render envmaps, we dont need to render them parallelly in a frame anymore, this can cause transform buffers and descriptor sets to balloon in complex scenes and cause crashes.
+		foreach ( var envmap in Query<EnvmapProbe>() )
+		{
+			if ( !envmap.Dirty ) continue;
+
+			envmap.RenderCubemap();
+			break;
+		}
+	}
+
+	/// <summary>
+	/// Cache all enabled and disabled cameras in the scene.
+	/// Registered/Deregistered in CameraComponent.OnAwake and OnDestroy.
+	/// </summary>
+	internal HashSet<CameraComponent> Cameras { get; } = new HashSet<CameraComponent>();
+
+	/// <summary>
+	/// Should be called before rendering. This allows things like reflections to render.
+	/// </summary>
+	internal void PreCameraRender()
+	{
+		// Prepare scene-owned rendering data before cameras copy it. Child views reuse the snapshot.
+		if ( ThreadSafe.IsMainThread )
+		{
+			Signal( GameObjectSystem.Stage.PrepareRender );
+		}
+
+		// We want to initialize all cameras (enabled & disabled) incase they're used to render manually
+		// we need to make sure the SceneCamera is created etc.
+		var cameras = RentSortedCameras();
+		try
+		{
+			foreach ( var cc in cameras )
+			{
+				cc.InitializeRendering();
+			}
+		}
+		finally
+		{
+			ReturnSortedCameras( cameras );
+		}
+
+		// Alpha is used to lerp between IBL and fixed ambient light
+		Color ambientLight = Color.Transparent;
+
+		foreach ( var light in Query<DirectionalLight>() )
+		{
+			if ( Camera.IsValid() && light.Tags.HasAny( Camera.RenderExcludeTags ) )
+				continue;
+
+			ambientLight += light.SkyColor;
+		}
+
+		foreach ( var light in Query<AmbientLight>() )
+		{
+			if ( Camera.IsValid() && light.Tags.HasAny( Camera.RenderExcludeTags ) )
+				continue;
+
+			ambientLight += light.Color;
+		}
+
+		if ( SceneWorld.IsValid() )
+		{
+			SceneWorld.AmbientLightColor = ambientLight;
+		}
+	}
+
+	private VolumeSystem _volumeSystem;
+
+	/// <summary>
+	/// Allows quickly finding components that have a volume
+	/// </summary>
+	public VolumeSystem Volumes => _volumeSystem ??= VolumeSystem.Get( this );
+
+	/// <summary>
+	/// Adds the "system" scene, which is defined in the project settings.
+	/// </summary>
+	internal void AddSystemScene()
+	{
+		if ( !WantsSystemScene )
+			return;
+
+		var systemScene = Application.GamePackage?.GetMeta( "SystemScene", "" ) ?? null;
+
+		if ( string.IsNullOrWhiteSpace( systemScene ) )
+			return;
+
+		// additive load this scene
+		var slo = new SceneLoadOptions();
+		slo.IsSystemScene = true;
+		slo.IsAdditive = true;
+		slo.SetScene( systemScene );
+		Load( slo );
+	}
+
+	/// <summary>
+	/// Find objects with all tags
+	/// </summary>
+	public IEnumerable<GameObject> FindAllWithTags( IEnumerable<string> tags )
+	{
+		foreach ( var go in Directory.AllGameObjects )
+		{
+			if ( go.Tags.HasAll( tags ) )
+			{
+				yield return go;
+			}
+		}
+	}
+
+	/// <summary>
+	/// Find objects with tag
+	/// </summary>
+	public IEnumerable<GameObject> FindAllWithTag( string tag )
+	{
+		return Directory.AllGameObjects.Where( x => x.Tags.Has( tag ) );
+	}
+}
+
+/// <summary>
+/// Allocation-free scope returned by <see cref="Scene.Push"/>.
+/// Use with <c>using var</c> to keep it stack-allocated; storing as <c>IDisposable</c> will box it.
+/// </summary>
+internal struct ScenePushScope : IDisposable
+{
+	Scene _pushed;
+	Scene _prev;
+	double _prevNowDouble;
+	float _prevDelta;
+	float _prevNow;
+
+	/// <summary>
+	/// A null scene makes a scope that does nothing, so callers don't need a nullable scope.
+	/// </summary>
+	internal ScenePushScope( Scene scene )
+	{
+		if ( scene is null ) return;
+
+		ThreadSafe.AssertIsMainThread();
+		_pushed = scene;
+		_prev = Game.ActiveScene;
+		_prevNowDouble = Time.NowDouble;
+		_prevDelta = Time.Delta;
+		_prevNow = Time.Now;
+		Game.ActiveScene = scene;
+		Time.Update( scene.TimeNow, scene.TimeDelta );
+	}
+
+	public void Dispose()
+	{
+		if ( _pushed is null ) return;
+		ThreadSafe.AssertIsMainThread();
+		if ( Game.ActiveScene == _pushed ) Game.ActiveScene = _prev;
+		Time.NowDouble = _prevNowDouble;
+		Time.Delta = _prevDelta;
+		Time.Now = _prevNow;
+		_pushed = null;
+	}
+}

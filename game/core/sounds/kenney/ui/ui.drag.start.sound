@@ -1,0 +1,12 @@
+{
+	"sounds":
+	[
+		"sounds/kenney/ui/click_001.vsnd"
+	],
+	"UI": true,
+	"Volume": 0.050000,
+	"VolumeRandom": 0.000000,
+	"Pitch": 2.000000,
+	"PitchRandom": 0.000000,
+	"DistanceMax": 1000.000000
+}

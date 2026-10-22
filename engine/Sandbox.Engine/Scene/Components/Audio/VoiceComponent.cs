@@ -1,0 +1,396 @@
+using Sandbox.Audio;
+
+namespace Sandbox;
+
+/// <summary>
+/// Records and transmits voice/microphone input to other players.
+/// </summary>
+[Expose]
+[Category( "Audio" )]
+[Title( "Voice Transmitter" )]
+[Icon( "mic" )]
+[Tint( EditorTint.Green )]
+public class Voice : Component
+{
+	static Voice singleRecorder;
+
+	[Expose]
+	public enum ActivateMode
+	{
+		[Icon( "hearing" )]
+		[Description( "Always recording and transmitting voice" )]
+		AlwaysOn,
+
+		[Icon( "touch_app" )]
+		[Description( "Hold a button down to talk" )]
+		PushToTalk,
+
+		[Icon( "science" )]
+		[Description( "Toggle recording by switching IsListening to true or false" )]
+		Manual
+	}
+
+	[Property] public float Volume { get; set; } = 1.0f;
+	[Property] public ActivateMode Mode { get; set; }
+	[Property, InputAction, ShowIf( nameof( Mode ), ActivateMode.PushToTalk )] public string PushToTalkInput { get; set; } = "voice";
+	[Property] public bool WorldspacePlayback { get; set; } = true;
+
+	[Description( "Play the sound of your own voice" )]
+	[Property] public bool Loopback { get; set; } = false;
+
+	/// <summary>
+	/// Analyze the voice for viseme weights while it plays. Analysis only runs while a <see cref="Renderer"/>
+	/// is set or <see cref="Visemes"/> / <see cref="LaughterScore"/> have been read recently.
+	/// </summary>
+	[Property, ToggleGroup( "LipSync", Label = "Lip Sync" )]
+	public bool LipSync { get; set; } = true;
+
+	/// <summary>
+	/// Optional renderer whose viseme morphs are driven by the voice.
+	/// </summary>
+	[Property, Group( "LipSync" )]
+	public SkinnedModelRenderer Renderer { get; set; }
+
+	[Property, Group( "LipSync" ), Range( 0, 5 )]
+	public float MorphScale { get; set; } = 3.0f;
+
+	[Property, Group( "LipSync" ), Range( 0, 1 )]
+	public float MorphSmoothTime { get; set; } = 0.1f;
+
+	/// <summary>
+	/// How long has it been since this sound played?
+	/// </summary>
+	public RealTimeSince LastPlayed { get; private set; }
+
+	/// <summary>
+	/// Laughter score for the current audio frame, between 0 and 1
+	/// </summary>
+	public float LaughterScore
+	{
+		get
+		{
+			lipSyncRequested = 0;
+			return sound.IsValid() ? sound.LipSync.LaughterScore : 0;
+		}
+	}
+
+	private bool recording = false;
+	private SoundStream soundStream;
+	private SoundHandle sound;
+	private RealTimeSince lipSyncRequested = float.MaxValue;
+
+	private MixerHandle targetMixer;
+
+	/// <summary>
+	/// Which mixer to target. Must be a descendant of the Voice mixer. Defaults to the Voice mixer if not set or invalid.
+	/// </summary>
+	[Property, ParentMixer( "Voice" )]
+	public MixerHandle VoiceMixer
+	{
+		get => targetMixer;
+		set
+		{
+			if ( value == targetMixer )
+				return;
+
+			targetMixer = value;
+			if ( sound.IsValid() )
+				sound.TargetMixer = targetMixer.GetOrDefault();
+		}
+	}
+
+	public Mixer TargetMixer
+	{
+		get => targetMixer.Get( Mixer.Voice );
+		set => VoiceMixer = value;
+	}
+
+	private float distance = 15_000f;
+
+	/// <inheritdoc cref="SoundHandle.Distance"/>
+	[Property, AudioDistanceFloat]
+	public float Distance
+	{
+		get => distance;
+		set
+		{
+			if ( value == distance )
+				return;
+
+			distance = value;
+			if ( sound.IsValid() )
+				sound.Distance = distance;
+		}
+	}
+
+	private Curve falloff = new( new( 0, 1, 0, -1.8f ), new( 0.05f, 0.22f, 3.5f, -3.5f ), new( 0.2f, 0.04f, 0.16f, -0.16f ), new( 1, 0 ) );
+
+	/// <inheritdoc cref="SoundHandle.Falloff"/>
+	[Property]
+	public Curve Falloff
+	{
+		get => falloff;
+		set
+		{
+			falloff = value;
+			if ( sound.IsValid() )
+				sound.Falloff = falloff;
+		}
+	}
+
+	/// <summary>
+	/// A list of 15 lipsync viseme weights. Requires <see cref="LipSync"/> to be enabled, doesn't need a <see cref="Renderer"/>.
+	/// Reading this keeps analysis running, so the first read after a pause may be empty.
+	/// </summary>
+	public IReadOnlyList<float> Visemes
+	{
+		get
+		{
+			lipSyncRequested = 0;
+			return sound.IsValid() ? sound.LipSync.Visemes : Array.Empty<float>();
+		}
+	}
+
+	internal override void OnEnabledInternal()
+	{
+		VoiceManager.OnCompressedVoiceData += OnVoice;
+
+		soundStream = new SoundStream( VoiceManager.SampleRate );
+
+		// Ensure that the Mixer selected is a Voice mixer
+		var currentMixer = targetMixer.GetOrDefault();
+		if ( !currentMixer.IsDescendantOf( Mixer.Voice ) )
+		{
+			targetMixer = Mixer.Voice;
+		}
+
+		base.OnEnabledInternal();
+	}
+
+	internal override void OnDisabledInternal()
+	{
+		base.OnDisabledInternal();
+
+		VoiceManager.OnCompressedVoiceData -= OnVoice;
+
+		if ( recording )
+		{
+			VoiceManager.StopRecording();
+			recording = false;
+		}
+
+		if ( sound is not null )
+		{
+			sound.Finished = true;
+			sound = null;
+		}
+		soundStream?.Dispose();
+		soundStream = null;
+	}
+
+	public bool IsRecording
+	{
+		get => recording;
+	}
+
+	private bool _isListening;
+
+	/// <summary>
+	/// Returns true if the mic is listening. Even if it's listening, it might
+	/// not be playing - because it will only record and transmit if it can hear sound.
+	/// </summary>
+	public bool IsListening
+	{
+		set => _isListening = value;
+		get
+		{
+			if ( IsProxy ) return false;
+			if ( Preferences.VoiceMode == VoiceMode.Disabled ) return false;
+			if ( Preferences.VoiceMode == VoiceMode.OpenMicrophone )
+				return Mode == ActivateMode.AlwaysOn || Mode == ActivateMode.PushToTalk || (Mode == ActivateMode.Manual && _isListening);
+
+			// PushToTalk: always require key press regardless of component mode
+			return Input.Down( PushToTalkInput );
+		}
+	}
+
+	/// <summary>
+	/// Measure of audio loudness.
+	/// </summary>
+	public float Amplitude => sound.IsValid() ? sound.Amplitude : 0;
+
+	private void UpdateSound()
+	{
+		if ( !sound.IsValid() ) return;
+
+		sound.Volume = Volume;
+		sound.Loopback = !IsProxy && !Loopback;
+
+		// Lipsync analysis is expensive, only run it when something consumes the result.
+		// Applied every frame so toggling LipSync or late binding a Renderer affects the live voice.
+		sound.LipSync.Enabled = LipSync && (Renderer.IsValid() || lipSyncRequested < 1.0f);
+
+		if ( WorldspacePlayback )
+		{
+			sound.Position = WorldPosition;
+			sound.OcclusionEnabled = true;
+		}
+		else
+		{
+			sound.ListenLocal = true;
+
+			// in ListenLocal mode we could let them place the sound in screen space,
+			// so it plays back to the left on one team, to the right on others etc
+			sound.Position = Vector3.Forward * 10.0f;
+		}
+	}
+
+	protected sealed override void OnUpdate()
+	{
+		UpdateMorphs();
+		UpdateSound();
+
+		// Stop the sound if we haven't received voice data for a while
+		// This also stops LipSync processing which runs per-frame
+		// Use Finished instead of Dispose() so the audio thread can safely wrap up
+		// before TickInternal disposes it - avoids concurrent CBinauralEffect release/create.
+		if ( sound.IsValid() && LastPlayed > 1.0f )
+		{
+			sound.Finished = true;
+			sound = null;
+		}
+
+		if ( !VoiceManager.IsValid )
+			return;
+
+		if ( IsListening )
+		{
+			if ( !recording )
+			{
+				VoiceManager.StartRecording();
+				recording = true;
+				singleRecorder = this;
+			}
+		}
+		else if ( recording )
+		{
+			if ( singleRecorder == this )
+			{
+				VoiceManager.StopRecording();
+			}
+
+			recording = false;
+		}
+	}
+
+	/// <summary>
+	/// Exclude these connection from hearing our voice.
+	/// </summary>
+	protected virtual IEnumerable<Connection> ExcludeFilter()
+	{
+		return Enumerable.Empty<Connection>();
+	}
+
+	/// <summary>
+	/// Whether we want to hear voice from a particular connection.
+	/// </summary>
+	protected virtual bool ShouldHearVoice( Connection connection )
+	{
+		return true;
+	}
+
+	private void OnVoice( Memory<byte> compressed )
+	{
+		if ( IsProxy ) return;
+		if ( singleRecorder != this ) return;
+
+		if ( Networking.System is not null )
+		{
+			using ( Rpc.FilterExclude( ExcludeFilter() ) )
+			{
+				Msg_Voice( compressed.ToArray() );
+			}
+		}
+		else
+		{
+			Msg_Voice( compressed.ToArray() );
+		}
+	}
+
+	[Rpc.Broadcast( NetFlags.OwnerOnly | NetFlags.UnreliableNoDelay )]
+	private void Msg_Voice( byte[] buffer )
+	{
+		if ( buffer == null || buffer.Length == 0 )
+			return;
+
+		if ( Application.IsHeadless )
+			return;
+
+		if ( !ShouldHearVoice( Rpc.Caller ) )
+			return;
+
+		OnVoice( buffer );
+	}
+
+	private void UpdateMorphs()
+	{
+		if ( !Renderer.IsValid() )
+			return;
+
+		// Nothing said for a while - the morphs have eased back to the animation
+		if ( LastPlayed > 1.0f )
+			return;
+
+		var model = Renderer.Model;
+		if ( model is null || model.MorphCount == 0 )
+			return;
+
+		var sceneModel = Renderer.SceneModel;
+		if ( !sceneModel.IsValid() )
+			return;
+
+		// Drive the mouth from the live voice analysis. Voice packets are bursty,
+		// so hold the current shape through short gaps, then ease back to zero.
+		ReadOnlySpan<float> visemes = default;
+
+		if ( LastPlayed < 0.2f && sound.IsValid() && sound.LipSync.VisemeWeights is { } live )
+		{
+			visemes = live;
+		}
+
+		sceneModel.Morphs.ApplyVisemes( visemes, MorphScale, MorphSmoothTime );
+	}
+
+	private void OnVoice( byte[] buffer )
+	{
+		if ( buffer.Length < 2 )
+			return;
+		if ( soundStream is null )
+			return;
+
+		if ( !sound.IsValid() )
+		{
+			sound = soundStream.Play();
+			sound.TargetMixer = TargetMixer;
+			sound.Distance = Distance;
+			sound.Falloff = Falloff;
+			sound.IsVoice = true;
+		}
+
+		if ( soundStream.WriteVoiceData( buffer ) <= 0 )
+			return;
+
+		LastPlayed = 0;
+		UpdateSound();
+	}
+
+	[AttributeUsage( AttributeTargets.Property )]
+	public class ParentMixerAttribute : Attribute
+	{
+		public string MixerName { get; }
+		public ParentMixerAttribute( string mixerName )
+		{
+			MixerName = mixerName;
+		}
+	}
+}

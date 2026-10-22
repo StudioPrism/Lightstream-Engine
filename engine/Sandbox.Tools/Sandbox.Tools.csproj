@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <VersionPrefix>1.0.1</VersionPrefix>
+    <TargetFramework>net10.0</TargetFramework>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <AssemblyName>Sandbox.Tools</AssemblyName>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <NoWarn>1701;1702;1591;CA1416</NoWarn>
+    <OutputPath>../../game/bin/managed</OutputPath>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Sandbox.Access/Sandbox.Access.csproj" />
+    <ProjectReference Include="../Sandbox.Bind/Sandbox.Bind.csproj" />
+    <ProjectReference Include="../Sandbox.Compiling/Sandbox.Compiling.csproj" />
+    <ProjectReference Include="../Sandbox.Engine/Sandbox.Engine.csproj" />
+    <ProjectReference Include="../Sandbox.Event/Sandbox.Event.csproj" />
+    <ProjectReference Include="../Sandbox.GameInstance/Sandbox.GameInstance.csproj" />
+    <ProjectReference Include="../Sandbox.Reflection/Sandbox.Reflection.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Service Include="{508349b6-6b84-4df5-91f0-309beebad82d}" />
+  </ItemGroup>
+
+</Project>

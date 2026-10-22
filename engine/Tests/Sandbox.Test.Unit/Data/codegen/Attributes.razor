@@ -1,0 +1,14 @@
+﻿@namespace Sandbox.Test.Generated
+@using Sandbox.UI
+
+<div a="one"></div>
+<div a="one" b="one"></div>
+<div a=one></div>
+<div a="I am the @one"></div>
+<div a=@one></div>
+<div a="@one"></div>
+
+@code{
+
+    public Sandbox.UI.Panel Target { get; set; }
+}

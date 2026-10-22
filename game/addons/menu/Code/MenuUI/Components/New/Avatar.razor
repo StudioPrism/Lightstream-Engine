@@ -1,0 +1,74 @@
+@using MenuProject.MenuUI.Popups
+@using Sandbox.Services.Players
+@using Sandbox.UI;
+@using Sandbox.UI.Navigation;
+@using Sandbox;
+@using System;
+@namespace Sandbox.UI
+@inherits Panel
+
+<root>
+    <div class="avatar @CssClasses()" style="background-image: url(avatar:@UserId)" />
+</root>
+
+@code {
+    [Property] public long UserId { get; set; } = Connection.Local.SteamId;
+
+    /// <summary>
+    /// Ring the face by what they're doing on Steam - green online, blue in s&amp;box. Off where that's a
+    /// given, like the party deck: everyone in your party's in s&amp;box, so the ring there says nothing.
+    /// </summary>
+    [Property] public bool ShowStatus { get; set; } = true;
+
+    Profile profile;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        profile = await Profile.Get(UserId);
+        StateHasChanged();
+    }
+
+    public string CssClasses()
+    {
+        if ( !ShowStatus ) return "";
+
+        var friend = new Friend(UserId);
+        if (friend.IsPlayingThisGame && !string.IsNullOrEmpty(friend.GetRichPresence("connect"))) return "ingame joinable";
+        if (friend.IsPlayingThisGame) return "ingame";
+        if (friend.IsAway || friend.IsBusy || friend.IsSnoozing) return "online away";
+        if (!friend.IsOnline) return "offline";
+        if (friend.IsOnline) return "online";
+        return "online";
+    }
+
+    void OpenUserProfile()
+    {
+        Game.Overlay.ShowPlayer(UserId);
+    }
+
+    public void JoinGame()
+    {
+        MenuUtility.JoinFriendGame(new Friend(UserId));
+    }
+
+    FriendCard popup;
+
+    protected override void OnMouseUp(MousePanelEvent e)
+    {
+        base.OnMouseUp(e);
+
+        // Click toggles - a second click on the same avatar closes it.
+        if (popup.IsValid())
+        {
+            popup.Delete();
+            popup = null;
+            return;
+        }
+
+        Popup.CloseAll();
+        popup = FriendCard.Show(this, new Friend(UserId), Popup.PositionMode.AboveCenter, 20);
+    }
+
+    protected override int BuildHash() => HashCode.Combine( CssClasses() );
+
+}

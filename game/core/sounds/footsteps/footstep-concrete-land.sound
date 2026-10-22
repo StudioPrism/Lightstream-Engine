@@ -1,0 +1,12 @@
+{
+	"volume": 0.700000,
+	"sounds":
+	[
+		"sounds/footsteps/footstep-concrete-land01.vsnd",
+		"sounds/footsteps/footstep-concrete-land02.vsnd",
+		"sounds/footsteps/footstep-concrete-land03.vsnd"
+	],
+	"VolumeRandom": 0.000000,
+	"Pitch": 1.000000,
+	"PitchRandom": 0.100000
+}

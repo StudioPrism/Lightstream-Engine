@@ -1,0 +1,18 @@
+{
+  "UI": false,
+  "Volume": "0.65,0.65,0",
+  "Pitch": "1.00,1.00,0",
+  "Decibels": 70,
+  "SelectionMode": "Random",
+  "Sounds": [
+    "sounds/kenney/ui/error_001.vsnd",
+    "sounds/kenney/ui/error_002.vsnd",
+    "sounds/kenney/ui/error_003.vsnd",
+    "sounds/kenney/ui/error_004.vsnd",
+    "sounds/kenney/ui/error_005.vsnd",
+    "sounds/kenney/ui/error_006.vsnd",
+    "sounds/kenney/ui/error_007.vsnd"
+  ],
+  "MaximumDistance": 1143.9335,
+  "MinimumDistance": 57.196674
+}

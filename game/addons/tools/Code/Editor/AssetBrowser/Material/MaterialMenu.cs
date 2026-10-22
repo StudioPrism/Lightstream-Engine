@@ -1,0 +1,247 @@
+﻿using Sandbox.Resources;
+
+namespace Editor;
+
+internal static class MaterialMenu
+{
+	[Event( "asset.contextmenu", Priority = 50 )]
+	public static void OnMaterialFileAssetContext( AssetContextMenu e )
+	{
+		// Are all the files we have selected image assets?
+		if ( !e.SelectedList.All( x => x.AssetType == AssetType.ImageFile ) )
+			return;
+
+		e.Menu.AddOption( $"Create Material", "image", action: () => CreateMaterialUsingImageFiles( e.SelectedList ) );
+
+		if ( e.SelectedList.Count == 1 )
+		{
+			e.Menu.AddOption( $"Create Texture", "texture", action: () => CreateTextureUsingImageFiles( e.SelectedList ) );
+			e.Menu.AddOption( $"Create Sprite", "emoji_emotions", action: () => CreateSpriteUsingImageFiles( e.SelectedList ) );
+		}
+		else
+		{
+			var menuTex = e.Menu.AddMenu( $"Create Texture", "texture" );
+			menuTex.AddOption( $"Create Texture", "texture", action: () => CreateTextureUsingImageFiles( e.SelectedList ) );
+			menuTex.AddOption( $"Create Texture Sheet", "grid_on", action: () => CreateTextureUsingImageFiles( e.SelectedList, true ) );
+			var menuSprite = e.Menu.AddMenu( $"Create Sprite", "emoji_emotions" );
+			menuSprite.AddOption( $"Create Sprite", "emoji_emotions", action: () => CreateSpriteUsingImageFiles( e.SelectedList ) );
+			menuSprite.AddOption( $"Create Animation", "directions_run", action: () => CreateSpriteUsingImageFiles( e.SelectedList, true ) );
+		}
+	}
+
+	private static void CreateTextureUsingImageFiles( IEnumerable<AssetEntry> entries, bool isTextureSheet = false )
+	{
+		var asset = entries.First().Asset;
+		var assetName = asset.Name;
+
+		var fd = new FileDialog( null );
+		fd.Title = "Create Texture from Image Files..";
+		fd.Directory = System.IO.Path.GetDirectoryName( asset.AbsolutePath );
+		fd.DefaultSuffix = ".vtex";
+		fd.SelectFile( $"{assetName}.vtex" );
+		fd.SetFindFile();
+		fd.SetModeSave();
+		fd.SetNameFilter( "Texture File (*.vtex)" );
+
+		if ( !fd.Execute() )
+			return;
+
+		if ( isTextureSheet )
+		{
+			var paths = entries.Select( x => System.IO.Path.ChangeExtension( x.Asset.Path, System.IO.Path.GetExtension( x.Asset.AbsolutePath ) ) );
+			var file = Inspectors.TextureInspector.TextureFile.CreateDefault( paths );
+			var json = Json.Serialize( file );
+			System.IO.File.WriteAllText( fd.SelectedFile, json );
+
+			asset = AssetSystem.RegisterFile( fd.SelectedFile );
+		}
+		else
+		{
+			// Individually export textures
+			foreach ( var p in entries )
+			{
+				var path = System.IO.Path.ChangeExtension( p.Asset.Path, System.IO.Path.GetExtension( p.Asset.AbsolutePath ) );
+				bool noCompress = p.Asset.MetaData.Get<bool>( "nocompress" );
+				var file = Inspectors.TextureInspector.TextureFile.CreateDefault( [path], noCompress );
+				var json = Json.Serialize( file );
+				var outPath = System.IO.Path.Combine( System.IO.Path.GetDirectoryName( fd.SelectedFile ), System.IO.Path.GetFileNameWithoutExtension( path ) + ".vtex" );
+				System.IO.File.WriteAllText( outPath, json );
+				asset = AssetSystem.RegisterFile( outPath );
+			}
+		}
+
+		MainAssetBrowser.Instance?.Local.UpdateAssetList();
+		MainAssetBrowser.Instance?.Local.FocusOnAsset( asset );
+		EditorUtility.InspectorObject = asset;
+	}
+
+	/// <summary>
+	/// Returns first asset which name contains provided fragment, or null if it found nothing.
+	/// </summary>
+	private static string FindTexture( IEnumerable<Asset> assets, params string[] fragments )
+	{
+		return assets.FirstOrDefault( x => fragments.Any( f => x.Name.Contains( f ) ) )?.RelativePath;
+	}
+
+	private static void CreateMaterialUsingImageFiles( IEnumerable<AssetEntry> entries )
+	{
+		string[] types = new[] { "color", "basecolor", "albedo", "ao", "occ", "amb", "normal", "metal", "metallic", "metalness", "rough", "diff", "diffuse", "nrm", "spec", "selfillum", "emissive", "emission", "mask", "tint", "opacity", "trans" };
+
+		var asset = entries.First().Asset;
+		var assetName = asset.Name;
+
+		foreach ( var t in types )
+		{
+			if ( assetName.EndsWith( $"_{t}" ) ) assetName = assetName.Substring( 0, assetName.Length - (t.Length + 1) );
+		}
+
+		var fd = new FileDialog( null );
+		fd.Title = "Create Material from Image Files..";
+		fd.Directory = System.IO.Path.GetDirectoryName( asset.AbsolutePath );
+		fd.DefaultSuffix = ".vmat";
+		fd.SelectFile( $"{assetName}.vmat" );
+		fd.SetFindFile();
+		fd.SetModeSave();
+		fd.SetNameFilter( "Material File (*.vmat)" );
+
+		if ( !fd.Execute() )
+			return;
+
+		var assetPath = System.IO.Path.GetDirectoryName( asset.AbsolutePath ).NormalizeFilename( false, false ) + "/";
+		var folderPeers = AssetSystem.All.Where( x => x.AssetType == AssetType.ImageFile ).Where( x => x.AbsolutePath.StartsWith( assetPath, StringComparison.OrdinalIgnoreCase ) ).ToArray();
+		var assetPeersWithSameBaseName = folderPeers.Where( x => x.Name == assetName || x.Name.StartsWith( assetName + "_" ) ).ToArray();
+		if ( assetPeersWithSameBaseName.Length > 0 )
+		{
+			folderPeers = assetPeersWithSameBaseName;
+		}
+
+		// prioritize picking assets from file selection first
+		var assetPeers = entries.Select( x => x.Asset )
+			.Where( x => x is not null )
+			.Concat( folderPeers )
+			.DistinctBy( x => x.AbsolutePath )
+			.ToArray();
+
+		//
+		// Try to work out what textures should go where using hacks and magic
+		//
+
+		string texColor = FindTexture( assetPeers, "_color", "_basecolor", "_albedo", "_diff" );
+		texColor ??= asset.RelativePath; // Failing that, lets use whatever we have selected, since they most likely selected the color one right
+
+		string texNormal = FindTexture( assetPeers, "_nrm", "_normal" ) ?? "materials/default/default_normal.tga";
+		string texAo = FindTexture( assetPeers, "_ao", "_occ", "_amb" ) ?? "materials/default/default_ao.tga";
+		string texRough = FindTexture( assetPeers, "_rough" ) ?? "materials/default/default_rough.tga";
+
+		string texMetallic = FindTexture( assetPeers, "_metal" );
+		if ( texMetallic != null )
+		{
+			texMetallic = $"\n	F_METALNESS_TEXTURE 1\n	TextureMetalness \"{texMetallic}\"";
+		}
+
+		string texSelfIllum = FindTexture( assetPeers, "_selfillum", "_emissive", "_emission" );
+		if ( texSelfIllum != null )
+		{
+			texSelfIllum = $"\n	F_SELF_ILLUM 1\n	TextureSelfIllumMask \"{texSelfIllum}\"";
+		}
+
+		string tintMask = FindTexture( assetPeers, "_mask", "_tint" );
+		if ( tintMask != null )
+		{
+			tintMask = $"\n	F_TINT_MASK 1\n	TextureTintMask \"{tintMask}\"";
+		}
+
+		string texTranslucency = FindTexture( assetPeers, "_opacity", "_trans" );
+		if ( texTranslucency != null )
+		{
+			texTranslucency = $"\n	F_TRANSLUCENT 1\n	TextureTranslucency \"{texTranslucency}\"";
+		}
+
+		var file = $@"
+Layer0
+{{
+	shader ""shaders/complex.shader_c""
+
+	TextureColor ""{texColor}""
+	TextureAmbientOcclusion ""{texAo}""
+	TextureNormal ""{texNormal}""
+	TextureRoughness ""{texRough}""{texMetallic}{texSelfIllum}{tintMask}{texTranslucency}
+
+}}
+";
+		System.IO.File.WriteAllText( fd.SelectedFile, file );
+
+		var resultAsset = AssetSystem.RegisterFile( fd.SelectedFile );
+
+		// These 3 lines are gonna be quite common I think.
+		MainAssetBrowser.Instance?.Local.UpdateAssetList();
+		MainAssetBrowser.Instance?.Local.FocusOnAsset( resultAsset );
+		EditorUtility.InspectorObject = resultAsset;
+	}
+
+	private static async void CreateSpriteUsingImageFiles( IEnumerable<AssetEntry> entries, bool isAnimation = false )
+	{
+		var asset = entries.First().Asset;
+		var assetName = asset.Name;
+
+		var fd = new FileDialog( null );
+		fd.Title = "Create Sprite from Image Files..";
+		fd.Directory = System.IO.Path.GetDirectoryName( asset.AbsolutePath );
+		fd.DefaultSuffix = ".sprite";
+		fd.SelectFile( $"{assetName}.sprite" );
+		fd.SetFindFile();
+		fd.SetModeSave();
+		fd.SetNameFilter( "Sprite File (*.sprite)" );
+
+		if ( !fd.Execute() )
+			return;
+
+		if ( isAnimation )
+		{
+			var textures = entries.Select( x => TextureFromImageFile( x ) ).Where( x => x is not null ).ToArray();
+			var sprite = Sprite.FromTextures( textures );
+			var json = sprite.Serialize().ToJsonString();
+			System.IO.File.WriteAllText( fd.SelectedFile, json );
+
+			asset = AssetSystem.RegisterFile( fd.SelectedFile );
+			while ( !asset.IsCompiledAndUpToDate )
+			{
+				await Task.Delay( 10 );
+			}
+		}
+		else
+		{
+			// Export individual sprites
+			foreach ( var p in entries )
+			{
+				var texture = TextureFromImageFile( p );
+				if ( texture is null ) continue;
+
+				var sprite = Sprite.FromTexture( texture );
+				var json = sprite.Serialize().ToJsonString();
+				var outPath = System.IO.Path.Combine( System.IO.Path.GetDirectoryName( fd.SelectedFile ), System.IO.Path.GetFileNameWithoutExtension( p.Asset.AbsolutePath ) + ".sprite" );
+				System.IO.File.WriteAllText( outPath, json );
+
+				asset = AssetSystem.RegisterFile( outPath );
+				while ( !asset.IsCompiledAndUpToDate )
+				{
+					await Task.Delay( 10 );
+				}
+			}
+		}
+
+		MainAssetBrowser.Instance?.Local.UpdateAssetList();
+		MainAssetBrowser.Instance?.Local.FocusOnAsset( asset );
+		EditorUtility.InspectorObject = asset;
+	}
+
+	private static Texture TextureFromImageFile( AssetEntry entry )
+	{
+		var generator = new ImageFileGenerator
+		{
+			FilePath = entry.Asset.RelativePath
+		};
+
+		return generator.Create( ResourceGenerator.Options.Default );
+	}
+}

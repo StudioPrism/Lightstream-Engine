@@ -1,0 +1,266 @@
+namespace Sandbox;
+
+/// <summary>
+/// A class that can serialize and deserialize whole objects to and from byte streams, 
+/// without needing to know the type beforehand.
+/// 
+/// https://docs.facepunch.com/doc/bytepack-FdTR6ZUoOa
+///
+/// </summary>
+internal partial class BytePack
+{
+	readonly Dictionary<Type, Packer> types = new();
+	readonly Dictionary<Identifier, Packer> handlers = new();
+	readonly Dictionary<int, Packer> typeHandler = new();
+
+	// Cap nesting so a deeply nested payload can't overflow the stack (uncatchable). Only covers
+	// one Deserialize tree - dispatching a deserialized payload needs its own limit on top.
+	const int MaxDepth = 32;
+
+	internal Func<Type, Packer> OnCreatePackerFromType { get; set; }
+	internal Func<int, Packer> OnCreatePackerFromIdentifier { get; set; }
+
+	public BytePack()
+	{
+		InstallPodCommon();
+
+		Add( new ObjectPacker() );
+		Add( new StringPacker() );
+		Add( new ValueArrayPacker() );
+		Add( new ObjectArrayPacker() );
+		Add( new ListPacker() );
+		Add( new DictionaryPacker() );
+	}
+
+	public void Dispose()
+	{
+		types.Clear();
+		handlers.Clear();
+		typeHandler.Clear();
+
+		OnCreatePackerFromType = default;
+		OnCreatePackerFromIdentifier = default;
+	}
+
+	internal void Add( Packer ti )
+	{
+		ti.Init( this );
+	}
+
+	public byte[] Serialize<T>( T obj )
+	{
+		ByteStream bs = ByteStream.Create( 1024 );
+
+		try
+		{
+			Serialize( ref bs, obj );
+			return bs.ToArray();
+		}
+		finally
+		{
+			bs.Dispose();
+		}
+	}
+
+	public void SerializeTo<T>( ref ByteStream bs, T obj )
+	{
+		Serialize( ref bs, obj );
+	}
+
+	public object Deserialize( byte[] memory ) => Deserialize( new ReadOnlySpan<byte>( memory ) );
+	public object Deserialize( ReadOnlySpan<byte> data )
+	{
+		var bs = ByteStream.CreateReader( data );
+
+		try
+		{
+			return Deserialize( ref bs );
+		}
+		finally
+		{
+			bs.Dispose();
+		}
+	}
+
+	public object Deserialize( ref ByteStream data ) => Deserialize( ref data, 0 );
+
+	/// <summary>
+	/// Deserialize a value of a known type. Plain value types are read without boxing them.
+	/// </summary>
+	public T Deserialize<T>( ref ByteStream data )
+	{
+		if ( typeof( T ).IsValueType )
+		{
+			var start = data.Position;
+			var h = data.Read<Identifier>();
+
+			var packer = h == Identifier.Runtime ? GetOrCreatePacker( data.Read<int>() ) : handlers.GetValueOrDefault( h );
+			if ( packer is IValuePacker<T> reader )
+				return reader.Read( ref data );
+
+			data.Position = start;
+		}
+
+		return (T)Deserialize( ref data, 0 );
+	}
+
+	/// <inheritdoc cref="Deserialize{T}(ref ByteStream)"/>
+	public T Deserialize<T>( ReadOnlySpan<byte> data )
+	{
+		var bs = ByteStream.CreateReader( data );
+
+		try
+		{
+			return Deserialize<T>( ref bs );
+		}
+		finally
+		{
+			bs.Dispose();
+		}
+	}
+
+	internal object Deserialize( ref ByteStream data, int depth )
+	{
+		if ( depth > MaxDepth )
+			throw new System.Exception( $"BytePack nesting depth exceeded ({MaxDepth}) - possible malicious payload" );
+
+		var h = data.Read<Identifier>();
+
+		if ( h == Identifier.Runtime )
+		{
+			int typeIdent = data.Read<int>();
+			var p = GetOrCreatePacker( typeIdent );
+
+			if ( p is not null )
+			{
+				return p.Read( ref data, depth );
+			}
+
+			throw new System.Exception( $"Unhandled runtime ident {typeIdent}" );
+		}
+
+		if ( handlers.TryGetValue( h, out var typeInfo ) )
+		{
+			return typeInfo.Read( ref data, depth );
+		}
+
+
+		if ( h == Identifier.Null ) return null;
+		throw new System.Exception( $"Unhandled header {h}" );
+	}
+
+	void Serialize<T>( ref ByteStream bs, T obj )
+	{
+		// Ahead of the null check, which boxes value types in unoptimized code
+		if ( typeof( T ).IsValueType && types.TryGetValue( typeof( T ), out var typed ) && typed is IValuePacker<T> writer )
+		{
+			typed.WriteTypeIdentifier( ref bs, typeof( T ) );
+			writer.Write( ref bs, obj );
+			return;
+		}
+
+		if ( obj is null )
+		{
+			bs.Write( Identifier.Null );
+			return;
+		}
+
+		// Snapshot blobs and sync tables are byte buffers. Their element type and wire
+		// header are already known, so avoid reflection, size lookup and array pinning.
+		if ( obj is byte[] bytes )
+		{
+			bs.Write( Identifier.ArrayValue );
+			bs.Write( bytes.Length );
+			bs.Write( Identifier.Byte );
+			bs.Write( bytes );
+			return;
+		}
+
+		if ( obj is Array array )
+		{
+			var element = array.GetType().GetElementType();
+
+			if ( SandboxedUnsafe.IsAcceptablePod( element ) )
+			{
+				bs.Write( Identifier.ArrayValue );
+				Serialize( Identifier.ArrayValue, ref bs, array );
+				return;
+			}
+
+			bs.Write( Identifier.Array );
+			Serialize( Identifier.Array, ref bs, array );
+			return;
+		}
+
+		var t = obj.GetType();
+
+		// Most fields use an installed POD/string packer or an already resolved runtime
+		// type. Don't walk their inheritance tree twice looking for List/Dictionary.
+		if ( types.TryGetValue( t, out var cached ) && !cached.UsesCollectionFormat )
+		{
+			cached.WriteTypeIdentifier( ref bs, t );
+			cached.Write( ref bs, obj );
+			return;
+		}
+
+		if ( t.IsBasedOnGenericType( typeof( List<> ) ) )
+		{
+			bs.Write( Identifier.List );
+			Serialize( Identifier.List, ref bs, obj );
+			return;
+		}
+
+		if ( t.IsBasedOnGenericType( typeof( Dictionary<,> ) ) )
+		{
+			bs.Write( Identifier.Dictionary );
+			Serialize( Identifier.Dictionary, ref bs, obj );
+			return;
+		}
+
+		if ( GetOrCreatePacker( t ) is Packer packer )
+		{
+			packer.WriteTypeIdentifier( ref bs, t );
+			packer.Write( ref bs, obj );
+			return;
+		}
+
+		throw new System.NotSupportedException( $"Unhandled type {t}" );
+	}
+
+	private Packer GetOrCreatePacker( Type type )
+	{
+		if ( types.TryGetValue( type, out var packer ) )
+			return packer;
+
+		if ( OnCreatePackerFromType is null )
+			return null;
+
+		packer = OnCreatePackerFromType( type );
+		if ( packer is null ) return null;
+
+		packer.Init( this );
+		return packer;
+	}
+
+
+	private Packer GetOrCreatePacker( int typeIdentifier )
+	{
+		if ( typeHandler.TryGetValue( typeIdentifier, out var packer ) )
+			return packer;
+
+		if ( OnCreatePackerFromIdentifier is null )
+			return null;
+
+		packer = OnCreatePackerFromIdentifier( typeIdentifier );
+		if ( packer is null )
+			return null;
+
+		packer.Init( this );
+		return packer;
+	}
+
+	void Serialize( Identifier ident, ref ByteStream bs, object obj )
+	{
+		handlers[ident].Write( ref bs, obj );
+	}
+}

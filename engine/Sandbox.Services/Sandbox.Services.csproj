@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<AssemblyName>Sandbox.Services</AssemblyName>
+		<RootNamespace>Sandbox.Services</RootNamespace>
+		<Title>Sandbox.Services</Title>
+		<Version>1.0.6</Version>
+		<Authors>facepunch, garry</Authors>
+		<Company>facepunch</Company>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="protobuf-net" Version="3.2.45" />
+		<PackageReference Include="protobuf-net.BuildTools" Version="3.2.33" PrivateAssets="all" IncludeAssets="runtime; build; native; contentfiles; analyzers; buildtransitive" />
+		<PackageReference Include="Refit" Version="8.0.0" />
+	</ItemGroup>
+  
+</Project>

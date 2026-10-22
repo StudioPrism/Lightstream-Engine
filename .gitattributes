@@ -1,0 +1,18 @@
+# Auto detect text files
+* text=auto
+
+# Anything under game (content) force crlf for consistent content hashes
+game/** text=auto eol=crlf
+# Except c# files, auto that
+game/**/*.cs text=auto
+# Shell scripts must use LF (a CRLF checkout breaks the shebang and every line under sh)
+*.sh text eol=lf
+
+#
+# GitHub linguist overrides (https://github.com/github-linguist/linguist/blob/main/docs/overrides.md)
+# Lets GitHub know the proper languages, what code is generated, third party, etc. for better stats/diffs
+#
+*.h linguist-language=C++
+*.shader linguist-language=HLSL
+*.fxc linguist-language=HLSL
+src/thirdparty/* linguist-vendored

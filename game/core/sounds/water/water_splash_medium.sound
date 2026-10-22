@@ -1,0 +1,12 @@
+{
+	"Volume": 0.400000,
+	"VolumeRandom": 0.200000,
+	"Pitch": 1.000000,
+	"PitchRandom": 0.200000,
+	"DistanceMax": 1000.000000,
+	"Sounds":
+	[
+		"sounds/water/water-transition-in.vsnd",
+		"sounds/water/water-transition-out.vsnd"
+	]
+}

@@ -1,0 +1,32 @@
+﻿@namespace Sandbox.Test.Generated
+@using Sandbox.UI
+@page "/home/page/url/"
+
+<span>Hello this is a simple component</span>
+
+<div>
+    <div class="title" hello=minimized>This is the title</div>
+    <p>This is something else.</p>
+</div>
+
+<MyButton CurrentDate=@(System.DateTime.UtcNow)></MyButton>
+
+<div @ref=MyPanelReference style="The Style">
+    <div>
+        Hey it's @StringValue !
+    </div>
+    <div class="markup">
+        <div>more markup</div>
+    </div>
+</div>
+
+@for ( int i=0; i<100;i++)
+{
+    <div>BULLSHIT</div>
+}
+
+@code{
+
+    public string StringValue{ get; set; }
+    public Sandbox.UI.Panel MyPanelReference { get; set; }
+}

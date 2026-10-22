@@ -1,0 +1,412 @@
+using NativeEngine;
+using Sandbox.Modals;
+
+namespace Sandbox.Engine;
+
+internal static partial class InputRouter
+{
+	static RealTimeSince timeSinceWindowActive;
+
+	internal static void OnMouseButton( ButtonCode button, bool down )
+	{
+		SetButtonState( button, down );
+
+		var mouse = Contexts.FirstOrDefault( x => x.MouseState != InputContext.InputState.Ignore );
+
+		// if this was likely the click that made the window active - and we're not in UI mode
+		// then ignore it.. because we don't want people shooting guns every time they re-activate
+		// the window
+		if ( down && timeSinceWindowActive < 0.1f )
+		{
+			if ( mouse is null || mouse.MouseState != InputContext.InputState.UI )
+				return;
+		}
+
+		var modifiers = GetCurrentModifiers();
+
+		if ( mouse is not null )
+		{
+			mouse.IN_Button( down, button, button, false, modifiers );
+		}
+
+		//
+		// When a button is released, we send it to each context. These contexts may have
+		// the button as pressed. The release should be sent to them so they can clear it.
+		//
+		if ( !down )
+		{
+			foreach ( var context in Contexts )
+			{
+				if ( context == mouse ) continue;
+
+				context.IN_ButtonReleased( button, button, modifiers );
+			}
+		}
+	}
+
+	internal static void OnWindowActive( bool active )
+	{
+		if ( active )
+		{
+			timeSinceWindowActive = 0;
+		}
+		else
+		{
+			//
+			// Reset state and do button release events
+			//
+			PressedButtons.Clear();
+
+			foreach ( var context in Contexts )
+			{
+				context.ReleaseAllButtons();
+			}
+		}
+	}
+
+	/// <summary>
+	/// Cursor is hidden and restricted to window (game mode) but the mouse has been moved
+	/// </summary>
+	internal static void OnMouseMotion( float dx, float dy )
+	{
+		var delta = new Vector2( dx, dy );
+
+		MouseCursorDelta += delta;
+		MouseCursorPosition += delta;
+
+		// game or mouse capture
+		var mouse = Contexts.FirstOrDefault( x => x.MouseState != InputContext.InputState.Ignore );
+		if ( mouse is not null )
+		{
+			mouse.In_MousePosition( MouseCursorPosition, delta );
+			return;
+		}
+	}
+
+	/// <summary>
+	/// Cursor is visible and mouse is being moved
+	/// </summary>
+	internal static void OnMousePositionChange( float x, float y, float dx, float dy )
+	{
+		MouseCursorPosition = new Vector2( x, y );
+
+		if ( WindowInput.GetRelativeMouseMode() )
+		{
+			dx = dy = 0;
+		}
+
+		// If this is set, we're in capture mode - so just update the position
+		// cache we restore when capture ends. This intentionally records the
+		// latest absolute position without moving the OS cursor.
+		if ( mouseCapturePosition is not null )
+		{
+			mouseCapturePosition = MouseCursorPosition;
+			return;
+		}
+
+		MouseCursorDelta += new Vector2( dx, dy );
+
+		var mouse = Contexts.FirstOrDefault( x => x.MouseState != InputContext.InputState.Ignore );
+		mouse?.In_MousePosition( MouseCursorPosition, new Vector2( dx, dy ) );
+	}
+
+	internal static void OnGameControllerButton( int deviceId, GameControllerCode button, bool down )
+	{
+		if ( button == GameControllerCode.Start )
+		{
+			OnEscapePressed( down );
+			return;
+		}
+
+		OnGamepadCode( deviceId, button.ToGamepadCode(), down );
+	}
+
+	/// <summary>
+	/// The escape, or start button has been pressed
+	/// </summary>
+	private static void OnEscapePressed( bool down )
+	{
+		EscapeIsDown = down;
+
+		if ( down )
+		{
+			EscapeWasPressed = true;
+			TimeSinceEscapePressed = 0;
+
+			// Any focused UI? Let that swallow the escape button. This is for things like escaping from text areas
+			var escapeTarget = Contexts.FirstOrDefault( x => x.KeyboardState != InputContext.InputState.Ignore && x.KeyboardFocusPanel is not null );
+			if ( escapeTarget is not null && escapeTarget.In_Escape() )
+			{
+				return;
+			}
+
+			// The menu's up over the game - the pause menu, or something opened from it. Escape is the
+			// menu's, to close it with, before the game can take it: F1 opens the pause menu even in a
+			// game that keeps escape for itself, and there'd be no other way back out
+			if ( IGameInstance.Current is not null && !Application.IsEditor && IModalSystem.Current?.IsModalOpen == true )
+			{
+				EscapeWasPressed = false;
+
+				using var scope = GlobalContext.MenuScope();
+				IModalSystem.Current?.PauseMenu();
+				return;
+			}
+
+			// The pointer can own a UI drag without that UI having keyboard focus (for example, a tab reorder).
+			var pointerTarget = Contexts.FirstOrDefault( x => x.MouseState != InputContext.InputState.Ignore );
+			if ( pointerTarget?.MouseState == InputContext.InputState.UI && pointerTarget.TryCancelDrag() )
+				return;
+
+			// Let the game input get first dibs
+			if ( IGameInstance.Current is not null && IGameInstanceDll.Current.InputContext.In_Escape() )
+			{
+				return;
+			}
+		}
+	}
+
+	private static void OnGamepadCode( int deviceId, GamepadCode code, bool down )
+	{
+		var controller = Controller.All.FirstOrDefault( x => x.DeviceId == deviceId );
+		Log.Trace( $"OnGameControllerButton {controller} - {code}, {down}" );
+
+		Sandbox.Input.UsingController = true;
+
+		SetButtonState( code, down );
+
+		foreach ( var action in Sandbox.Input.InputActions.Where( x => x.GamepadCode != GamepadCode.None && x.GamepadCode == code ) )
+		{
+			var i = Sandbox.Input.GetActionIndex( action );
+
+			if ( controller?.InputContext is not { } controllerContext )
+				continue;
+
+			if ( down )
+			{
+				controllerContext.AccumActionsPressed |= 1UL << i;
+			}
+			else
+			{
+				controllerContext.AccumActionsReleased |= 1UL << i;
+			}
+		}
+	}
+
+	internal static void OnGameControllerAxis( int deviceId, GameControllerAxis axis, int value )
+	{
+		var controller = Controller.All.FirstOrDefault( x => x.DeviceId == deviceId );
+		Log.Trace( $"OnGameControllerButton {controller} - {axis}, {value}" );
+
+		if ( controller is null )
+			return;
+
+		controller.SetAxis( axis, value );
+
+		//// We're going to check our triggers and convert them into a virtual button, for ease of use
+		//// (and backwards compatibility with SteamInput)
+
+		//// We don't care about non triggers
+		if ( axis < GameControllerAxis.TriggerLeft )
+			return;
+
+		const float triggerDeadzone = 0.75f;
+
+		// I hate this but okay
+		GamepadCode code = axis switch
+		{
+			GameControllerAxis.TriggerLeft => GamepadCode.LeftTrigger,
+			GameControllerAxis.TriggerRight => GamepadCode.RightTrigger,
+			_ => GamepadCode.None,
+		};
+
+		// Normalize raw SDL axis value to 0-1 range before comparing against the normalized deadzone.
+		OnGamepadCode( deviceId, code, ((float)value).Remap( 0, Controller.AXIS_RANGE.y, 0, 1 ) >= triggerDeadzone );
+	}
+
+	internal static void OnGameControllerConnected( int deviceId )
+	{
+		var controller = new Controller( deviceId );
+		Log.Info( $"New {controller} controller detected" );
+
+		Controller.All.Add( controller );
+	}
+
+	internal static void OnGameControllerDisconnected( int joystickId )
+	{
+		var controller = Controller.All.FirstOrDefault( x => x.DeviceId == joystickId );
+		if ( controller is not null )
+		{
+			Log.Info( $"{controller} controller removed" );
+			Controller.All.Remove( controller );
+		}
+		else
+		{
+			Log.Warning( $"Couldn't find Controller instance with {joystickId}" );
+		}
+	}
+
+	internal static void OnKey( ButtonCode scanButtonCode, ButtonCode keyButtonCode, bool down, bool repeat )
+	{
+		if ( !repeat )
+		{
+			SetButtonState( scanButtonCode, down );
+		}
+
+		var modifiers = GetCurrentModifiers();
+
+		if ( scanButtonCode == ButtonCode.KEY_ESCAPE )
+		{
+			if ( repeat )
+				return;
+
+			// Reserve Shift+Escape for the platform menu while testing in the editor.
+			// Capture the chord now, before Shift can be released or game UI can consume Escape.
+			if ( down && Application.IsEditor && Game.IsPlaying && modifiers.Contains( KeyboardModifiers.Shift ) )
+			{
+				EditorPauseMenuWasPressed = true;
+				return;
+			}
+
+			OnEscapePressed( down );
+			return;
+		}
+
+		//
+		// Function keys
+		//
+		if ( scanButtonCode >= ButtonCode.KEY_F1 && scanButtonCode <= ButtonCode.KEY_F12 )
+		{
+			if ( !down || repeat ) return;
+
+			IToolsDll.Current?.OnFunctionKey( scanButtonCode, modifiers );
+
+			var bind = Sandbox.Engine.KeyBindings.GetBinding( scanButtonCode );
+			if ( string.IsNullOrEmpty( bind ) ) return;
+
+			ConVarSystem.Run( bind );
+			return;
+		}
+
+		//
+		// Console
+		//
+		if ( scanButtonCode == ButtonCode.KEY_BACKQUOTE || scanButtonCode == ButtonCode.KEY_TILDE )
+		{
+			if ( !down || repeat ) return;
+
+			if ( Engine.IToolsDll.Current?.ConsoleFocus() ?? false )
+				return;
+
+			ConVarSystem.Run( "con_toggle" );
+			return;
+		}
+
+		var keyboard = Contexts.FirstOrDefault( x => x.KeyboardState != InputContext.InputState.Ignore );
+		if ( keyboard is not null )
+		{
+			keyboard.IN_Button( down, scanButtonCode, keyButtonCode, repeat, modifiers );
+		}
+
+		//
+		// When a button is released, we send it to each context. These contexts may have
+		// the button as pressed. The release should be sent to them so they can clear it.
+		//
+		if ( !down )
+		{
+			foreach ( var context in Contexts )
+			{
+				if ( context == keyboard ) continue;
+
+				context.IN_ButtonReleased( scanButtonCode, keyButtonCode, modifiers );
+			}
+		}
+	}
+
+	internal static void OnText( string text )
+	{
+		var keyboard = Contexts.FirstOrDefault( x => x.KeyboardState == InputContext.InputState.UI );
+		if ( keyboard is not null )
+		{
+			keyboard.IN_Text( text );
+		}
+	}
+
+	internal static void OnMouseWheel( float x, float y )
+	{
+		var value = new Vector2( x, y );
+		var mouse = Contexts.FirstOrDefault( x => x.MouseState != InputContext.InputState.Ignore );
+		var modifiers = GetCurrentModifiers();
+
+		if ( mouse is not null )
+		{
+			if ( y < 0 )
+			{
+				mouse.IN_Button( true, ButtonCode.MouseWheelDown, ButtonCode.MouseWheelDown, false, default );
+				mouse.IN_Button( false, ButtonCode.MouseWheelDown, ButtonCode.MouseWheelDown, false, default );
+			}
+			else
+			{
+				mouse.IN_Button( true, ButtonCode.MouseWheelUp, ButtonCode.MouseWheelUp, false, default );
+				mouse.IN_Button( false, ButtonCode.MouseWheelUp, ButtonCode.MouseWheelUp, false, default );
+			}
+
+			mouse.IN_MouseWheel( value, modifiers );
+		}
+	}
+
+	internal static void OnImeComposition( string text )
+	{
+		var keyboard = Contexts.FirstOrDefault( x => x.KeyboardState != InputContext.InputState.Ignore );
+		if ( keyboard is not null )
+		{
+			keyboard.IN_ImeComposition( text );
+		}
+	}
+
+	// Gathered as the OS hands over an in-flight drop, delivered together on OnDropComplete
+	static List<string> _dropFiles;
+	static string _dropText;
+
+	internal static void OnDropFile( string path )
+	{
+		_dropFiles ??= new();
+		_dropFiles.Add( path );
+	}
+
+	internal static void OnDropText( string text )
+	{
+		_dropText = text;
+	}
+
+	internal static void OnDropComplete( float x, float y )
+	{
+		var files = _dropFiles;
+		var text = _dropText;
+		_dropFiles = null;
+		_dropText = null;
+
+		if ( files is null && string.IsNullOrEmpty( text ) ) return;
+
+		var mouse = Contexts.FirstOrDefault( c => c.MouseState != InputContext.InputState.Ignore );
+		mouse?.IN_Drop( files, text, new Vector2( x, y ) );
+	}
+
+	/// <summary>
+	/// Get the current modifier key state by checking the actual button state directly.
+	/// </summary>
+	static KeyboardModifiers GetCurrentModifiers()
+	{
+		KeyboardModifiers m = KeyboardModifiers.None;
+
+		if ( IsButtonDown( ButtonCode.KEY_LSHIFT ) || IsButtonDown( ButtonCode.KEY_RSHIFT ) )
+			m |= KeyboardModifiers.Shift;
+
+		if ( IsButtonDown( ButtonCode.KEY_LCONTROL ) || IsButtonDown( ButtonCode.KEY_RCONTROL ) )
+			m |= KeyboardModifiers.Ctrl;
+
+		if ( IsButtonDown( ButtonCode.KEY_LALT ) || IsButtonDown( ButtonCode.KEY_RALT ) )
+			m |= KeyboardModifiers.Alt;
+
+		return m;
+	}
+}

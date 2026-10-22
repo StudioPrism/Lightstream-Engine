@@ -1,0 +1,17 @@
+﻿@namespace TestComponents
+
+<div>
+    The Title Is @Title
+</div>
+
+@code 
+{
+    public string Title { get; set; }
+
+    public System.Action OnSomethingSomething{ get; set; }
+
+    public void TriggerCallback()
+    {
+        OnSomethingSomething?.Invoke();
+    }
+}

@@ -1,0 +1,60 @@
+name: PR Triage
+on:
+  pull_request_target:
+    types: [ labeled ]
+
+jobs:
+  pr-triaged:
+    runs-on: ubuntu-latest
+    if: github.event.label.name == 'triaged'
+    steps:
+      - name: Ensure PR checks passed
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const requiredChecks = ['format', 'tests'];
+
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              throw new Error('No pull request found in event payload.');
+            }
+
+            const { data } = await github.rest.checks.listForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: pr.head.sha,
+              per_page: 100
+            });
+
+            const checkRuns = data.check_runs ?? [];
+            for (const requiredCheck of requiredChecks) {
+              const match = checkRuns.find(run => (run.name ?? '') === requiredCheck);
+
+              if (!match || match.conclusion !== 'success') {
+                const status = match ? (match.conclusion ?? match.status ?? 'unknown') : 'missing';
+                core.warning(`Required check '${requiredCheck}' did not pass (${status}).`);
+                throw new Error('Cannot triage until required checks succeed. Remove and re-add the triaged label to retry.');
+              }
+            }
+
+      - name: Repository Dispatch
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          github-token: ${{ secrets.SBOXBOT_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+
+            await github.rest.repos.createDispatchEvent({
+              owner: 'Facepunch',
+              repo: 'sbox',
+              event_type: 'pr-triaged',
+              client_payload: {
+                number: pr.number,
+                base_ref: pr.base.ref,
+                head_sha: pr.head.sha,
+                title: pr.title,
+                html_url: pr.html_url,
+                triager: context.payload.sender?.login ?? 'unknown'
+              }
+            });

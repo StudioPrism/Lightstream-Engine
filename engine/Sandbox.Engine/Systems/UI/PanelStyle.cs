@@ -1,0 +1,374 @@
+﻿namespace Sandbox.UI;
+
+public sealed class PanelStyle : Styles
+{
+	Panel panel;
+
+	internal Styles Cached = new Styles();
+	internal Styles Final = new Styles();
+
+	/// <summary>
+	/// This could be a local variable if we wanted to create a new class every time
+	/// </summary>
+	List<StyleSelector> activeRules;
+
+	/// <summary>
+	/// Store the last active rules so we can compare them when they change and trigger sounds etc on new styles
+	/// </summary>
+	internal List<StyleSelector> LastActiveRules;
+
+	/// <summary>
+	/// Cache of the active rules that are applied, that way we can trigger stuff only if they actually changed
+	/// </summary>
+	int ActiveRulesGuid;
+
+	private bool isDirty = true;
+	internal bool skipTransitions = true;
+
+	bool rulesChanged = true;
+
+	public override void Dirty()
+	{
+		isDirty = true;
+		panel?.SetNeedsPreLayout();
+	}
+	internal bool IsDirty => isDirty;
+
+	internal PanelStyle( Panel panel )
+	{
+		this.panel = panel;
+	}
+
+	/// <summary>
+	/// Should be called when a stylesheet in our bundle has changed. This can happen as a result of
+	/// editing it in the style editor.
+	/// </summary>
+	internal void UnderlyingStyleHasChanged()
+	{
+		ActiveRulesGuid = -1;
+	}
+
+	/// <summary>
+	/// All these styles could possibly apply to us. To get this list we get the stylesheets from
+	/// ourself and our anscestors and then filter them by the broadphase. The broadphase is a check
+	/// against classes, element names and ids, things that don't change in a recursive way.
+	/// </summary>
+	List<StyleBlock> _styleBlocks;
+
+	/// <summary>
+	/// Scratch set for de-duplicating candidate blocks. Rules build on worker threads, so one per
+	/// thread. Emptied around every gather: a block held here would keep its stylesheet's textures
+	/// alive, and a gather that threw would leave stale entries for the next one.
+	/// </summary>
+	[ThreadStatic]
+	static HashSet<StyleBlock> _seenBlocks;
+
+	/// <summary>
+	/// A hash of the things that are checked in the broadphase.
+	/// </summary>
+	int broadPhaseHash = 0;
+
+	bool _hasBeforeElement;
+	bool _hasAfterElement;
+
+	/// <summary>
+	/// This style has a ::before element available. This is signalling to the panel system that if we 
+	/// apply this style, we should also create a ::before element.
+	/// </summary>
+	public bool HasBeforeElement => _hasBeforeElement;
+
+	/// <summary>
+	/// This style has a ::after element available. This is signalling to the panel system that if we 
+	/// apply this style, we should also create a ::after element.
+	/// </summary>
+	public bool HasAfterElement => _hasAfterElement;
+
+	/// <summary>
+	/// Called when a stylesheet has been added or removed from ourselves or one of
+	/// our ancestor panels - because under that condition we need to rebuild our
+	/// broadphase.
+	/// </summary>
+	internal void InvalidateBroadphase()
+	{
+		// Always walk the whole subtree. Stopping at a panel that happens to have no blocks built
+		// yet would leave its children holding rules from the old sheet, so a stylesheet swap only
+		// applied to part of the tree.
+		_styleBlocks = null;
+		panel.StyleSelectorsChanged( false, false );
+
+		foreach ( var child in panel.Children )
+		{
+			child.Style?.InvalidateBroadphase();
+		}
+	}
+
+	void BuildApplicableBlocks()
+	{
+		_styleBlocks ??= new();
+		_styleBlocks.Clear();
+
+		// Gather only the rules indexed for our classes (plus the unindexed element/id/* rules) rather
+		// than scanning every rule. ::before/::after broadphase against their parent's classes.
+		var bp = ((IStyleTarget)panel).IsBeforeOrAfter ? panel.Parent : panel;
+		if ( bp == null ) return;
+
+		var seen = _seenBlocks ??= new();
+		seen.Clear();
+
+		try
+		{
+			for ( var p = panel; p != null; p = p.StyleParent )
+			{
+				var sheets = p.StyleSheet.List;
+				if ( sheets == null ) continue;
+
+				foreach ( var sheet in sheets )
+					sheet.GatherCandidates( bp._class, panel, seen, _styleBlocks );
+			}
+		}
+		finally
+		{
+			seen.Clear();
+		}
+	}
+
+
+
+	/// <summary>
+	/// Called from the root panel in a thread. We replace activeRules with all of the rules that
+	/// we want applied and return true if the rules changed.
+	/// </summary>
+	internal bool BuildRulesInThread()
+	{
+		activeRules?.Clear();
+
+		var hash = HashCode.Combine( panel.Id, panel.ElementName, panel.ClassHash );
+		if ( _styleBlocks == null || hash != broadPhaseHash )
+		{
+			BuildApplicableBlocks();
+		}
+		broadPhaseHash = hash;
+
+		_hasBeforeElement = false;
+		_hasAfterElement = false;
+
+		bool isBeforeOrAfter = (panel as IStyleTarget).IsBeforeOrAfter;
+
+		foreach ( var c in _styleBlocks )
+		{
+			//
+			// If we're not a ::before or ::after element, see if we have any styles with ::before or ::after elements.
+			//
+			if ( !isBeforeOrAfter )
+			{
+				// Only probe blocks that actually have a ::before / ::after selector - the rest can never
+				// produce a pseudo-element, so testing them is wasted work.
+				if ( !_hasBeforeElement && c.HasBefore )
+					_hasBeforeElement = c.Test( panel, PseudoClass.Before ) != null;
+
+				if ( !_hasAfterElement && c.HasAfter )
+					_hasAfterElement = c.Test( panel, PseudoClass.After ) != null;
+			}
+
+			var winningSelector = c.Test( panel );
+			if ( winningSelector == null ) continue;
+
+			activeRules ??= new();
+			activeRules.Add( winningSelector );
+		}
+
+		int ruleguid = 0;
+		if ( activeRules != null )
+		{
+			activeRules.Sort( StyleOrderer.Instance );
+
+			foreach ( var entry in activeRules )
+			{
+				ruleguid = HashCode.Combine( ruleguid, entry );
+			}
+		}
+
+		rulesChanged = rulesChanged || ruleguid != ActiveRulesGuid;
+		ActiveRulesGuid = ruleguid;
+
+		return rulesChanged;
+	}
+
+	internal bool BuildCached( ref LayoutCascade cascade )
+	{
+		if ( !isDirty && !cascade.SelectorChanged && !rulesChanged )
+			return false;
+
+		isDirty = false;
+
+		Cached.From( Styles.Default );
+
+		if ( activeRules != null )
+		{
+			foreach ( var entry in activeRules )
+			{
+				Cached.Add( entry.Block.Styles );
+			}
+		}
+
+		//
+		// Rules changed
+		//
+		if ( rulesChanged )
+		{
+			rulesChanged = false;
+			cascade.SelectorChanged = true;
+
+			LastActiveRules ??= new();
+			activeRules ??= new();
+
+			// Rules are ordered by cascade priority. Only the winning sound rule can trigger.
+			var soundIn = activeRules.LastOrDefault( x => x.Block.Styles.SoundIn != null );
+			if ( soundIn != null && !LastActiveRules.Contains( soundIn ) )
+				OnRuleAdded( soundIn );
+
+			var soundOut = LastActiveRules.LastOrDefault( x => x.Block.Styles.SoundOut != null );
+			if ( soundOut != null && !activeRules.Contains( soundOut ) )
+				OnRuleRemoved( soundOut );
+
+			LastActiveRules.Clear();
+			LastActiveRules.AddRange( activeRules );
+		}
+
+		Cached.Add( this );
+
+		Cached.ApplyScale( cascade.Scale );
+		return true;
+	}
+
+	internal Styles BuildFinal( ref LayoutCascade cascade, out bool changed )
+	{
+		var time = panel.TimeNow;
+		var timeDelta = panel.TimeDelta;
+
+		cascade.SkipTransitions = skipTransitions || cascade.SkipTransitions;
+		changed = BuildCached( ref cascade );
+
+		if ( !cascade.SkipTransitions && !HasTransitions && !HasAnimation )
+		{
+			Final.CopyShadows( Cached );
+		}
+
+		if ( cascade.SkipTransitions )
+		{
+			Final.CopyShadows( Cached );
+			panel.Transitions.Kill();
+			skipTransitions = false;
+		}
+		else if ( changed && Final != null )
+		{
+			panel.Transitions.Kill( Final );
+			panel.Transitions.Add( Final, Cached, time - timeDelta );
+		}
+
+		Final.From( Cached );
+		Final.ResolveCssWide( cascade.ParentStyles );
+		cascade.ApplyCascading( Final );
+		var needsDefaultFontSize = !Final.FontSize.HasValue;
+		Final.FillDefaults();
+
+		// Defaults are filled after scaling. Scale the fallback font too, but leave inherited
+		// and explicitly styled fonts alone - they're already in screen pixels.
+		if ( needsDefaultFontSize )
+			Length.Scale( ref Final._fontsize, cascade.Scale, true );
+
+		if ( Final.HasCurrentColor )
+			Final.ResolveCurrentColor( cascade.ParentStyles );
+
+		if ( panel.Transitions.Run( Final, time ) )
+		{
+			changed = true;
+		}
+
+		if ( Final.ApplyAnimation( panel ) )
+		{
+			changed = true;
+		}
+
+		return Final;
+	}
+
+	public override bool Set( string property, string value )
+	{
+		Dirty();
+
+		return base.Set( property, value );
+	}
+
+	internal void OnRuleAdded( StyleSelector selector )
+	{
+		if ( selector.Block.Styles.SoundIn != null )
+		{
+			panel.PlaySound( selector.Block.Styles.SoundIn );
+		}
+	}
+
+	internal void OnRuleRemoved( StyleSelector selector )
+	{
+		if ( selector.Block.Styles.SoundOut != null )
+		{
+			panel.PlaySound( selector.Block.Styles.SoundOut );
+		}
+	}
+
+	//
+	// Helpers
+	//
+
+
+	public void SetBackgroundImage( Texture texture )
+	{
+		BackgroundImage = texture;
+	}
+
+	public void SetBackgroundImage( string image )
+	{
+		SetBackgroundImage( Texture.Load( image ) );
+	}
+
+	public async Task SetBackgroundImageAsync( string image )
+	{
+		SetBackgroundImage( await Texture.LoadAsync( image ) );
+	}
+
+	public void SetRect( Rect rect )
+	{
+		Left = rect.Left;
+		Top = rect.Top;
+		Width = rect.Width;
+		Height = rect.Height;
+
+		Dirty();
+	}
+
+	/// <summary>
+	/// Returns true if we have the style
+	/// </summary>
+	internal bool ContainsStyle( Styles style )
+	{
+		if ( LastActiveRules == null ) return false;
+
+		foreach ( var rule in LastActiveRules )
+		{
+			if ( rule.Block.Styles == style )
+				return true;
+		}
+
+		return false;
+	}
+}
+
+internal class StyleOrderer : IComparer<StyleSelector>
+{
+	internal static StyleOrderer Instance = new StyleOrderer();
+
+	public int Compare( StyleSelector x, StyleSelector y )
+	{
+		return x.Score.CompareTo( y.Score );
+	}
+}

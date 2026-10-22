@@ -1,37 +1,84 @@
-# Lightstream
+<div align="center">
+  <img src="https://sbox.game/img/sbox-logo-square.svg" width="80px" alt="s&box logo">
 
-Studio Prism's framework and SDK work built in and around [s&box](https://sbox.game/).
+  [Website] | [Getting Started] | [Forums] | [Documentation] | [Contributing]
+</div>
 
-Lightstream is being reorganized around reusable runtime systems, editor extensions, and authoring tools for Studio Prism projects. s&box supplies the underlying engine and editor. Game-specific content stays in its own repository.
+[Website]: https://sbox.game/
+[Getting Started]: https://sbox.game/learn/getting-started
+[Forums]: https://sbox.game/f/
+[Documentation]: https://sbox.game/dev/doc/
+[Contributing]: CONTRIBUTING.md
 
-## Current status
+# s&box
 
-This branch is the s&box foundation and documentation layout. It does not yet contain a runnable s&box project, C# implementation, or packaged SDK. The previous standalone Swift prototype is preserved on dedicated branches; it is no longer the direction of `main`.
+[s&box](https://sbox.game) is a modern game engine, built on Valve's Source 2 and the latest .NET technology, it provides a modern intuitive editor for creating games.
 
-## Repository layout
+![s&box editor](https://cdn.sbox.game/about/editor.webp)
 
-| Path | Purpose |
-| --- | --- |
-| [Code/](Code/README.md) | Shared runtime systems |
-| [Editor/](Editor/README.md) | s&box editor extensions |
-| [Tools/](Tools/README.md) | Authoring workflows and supporting tools |
-| [docs/architecture.md](docs/architecture.md) | Project boundaries and intended integration |
-| [docs/development.md](docs/development.md) | Current development workflow and next steps |
-| [docs/swift-history.md](docs/swift-history.md) | Preserved Swift branches and snapshots |
+If your goal is to create games using s&box, please start with [getting started guide](https://sbox.game/learn/getting-started).
+This repository is for building the engine from source for those who want to contribute to the development of the engine.
 
-## Related projects
+## Getting the engine
 
-- [Projekt Alpha](https://github.com/StudioPrism/Projekt-Alpha): a separate s&box game project. Lightstream integration is not yet declared here.
-- **przm.DEV**: the separate local development hub for launching tools and accessing repositories and documentation.
+### Steam
+
+You can download and install the s&box editor directly from [Steam](https://store.steampowered.com/app/590830/sbox/).
+
+### Compiling from source
+
+This repository contains the C# engine, editor, tooling and game content. The native Source 2 core is
+distributed as prebuilt binaries that setup downloads for your platform, so no C++ toolchain is needed.
+
+| Platform | Setup | Notes |
+|----------|-------|-------|
+| Windows 10 / 11 (x64) | `Setup.bat` | |
+| Linux (x64) | `./Setup.sh` | Binaries target the Steam Linux Runtime, most distros should work. |
+| macOS (Apple Silicon) | `./Setup.sh` | Intel Macs are not supported. |
+
+#### Prerequisites
+
+* [Git](https://git-scm.com/downloads)
+* [.NET 10 SDK](https://dotnet.microsoft.com/en-us/download)
+* An IDE for the C# code is recommended: [Visual Studio 2026](https://visualstudio.microsoft.com/) or
+  [Rider](https://www.jetbrains.com/rider/) on Windows, Rider or [VS Code](https://code.visualstudio.com/) on Linux and macOS.
+
+#### Setup
+
+```bash
+# Clone the repo
+git clone https://github.com/Facepunch/sbox-public.git
+cd sbox-public
+
+# Windows
+Setup.bat
+
+# Linux / macOS
+./Setup.sh
+```
+
+Once setup completes, the game (sbox) and editor (sbox-dev.exe) run from the `game` folder.
+
+#### Staying up to date
+
+Pulling on Git will run a hook that fetches any new native binaries or content that changed and regenerates the interop bindings. Build the C# code from your IDE as usual, or rerun `Setup.bat` for a full incremental rebuild including shaders and content.
 
 ## Contributing
 
-Keep reusable systems separate from game rules and content. Document new dependencies and validate changes in an actual s&box host project before describing an integration as working. See the [development guide](docs/development.md).
+If you would like to contribute to the engine, please see the [contributing guide](CONTRIBUTING.md).
+
+If you want to report bugs or request new features, see [sbox-issues](https://github.com/Facepunch/sbox-public/issues/).
+
+## Documentation
+
+Full documentation, tutorials, and API references are available at [sbox.game/dev/](https://sbox.game/dev/).
 
 ## License
 
-Copyright Studio Prism. Licensed under [PolyForm Shield 1.0.0](https://polyformproject.org/licenses/shield/1.0.0).
+The s&box engine source code is licensed under the [MIT License](LICENSE.md).
 
-> Required Notice: Copyright Studio Prism (https://github.com/studioprism)
+Certain native binaries in `game/bin` are not covered by the MIT license. These binaries are distributed under the s&box EULA. You must agree to the terms of the EULA to use them.
 
-PolyForm Shield allows free use for any purpose **except competing with Studio Prism's commercial products**. You may study, modify, and build on Lightstream — you may not use it to build and sell a competing game engine.
+This project includes third-party components that are separately licensed.
+Those components are not covered by the MIT license above and remain subject
+to their original licenses as indicated in `game/thirdpartylegalnotices`.

@@ -1,0 +1,103 @@
+﻿@using System
+@namespace Sandbox.UI
+@inherits Sandbox.UI.Panel
+
+@if (VideoPlayer == null)
+    return;
+
+@* Over the foot of the video, on a scrim - the timeline across the full width, then play, volume
+   and the time under it. Fades in while you're over the video, and stays while it's paused. *@
+<root class="videocontrols @(VideoPlayer.IsPaused ? "paused" : "")">
+
+    <div class="timeline">
+        <SliderControl NumberFormat="0" Min="@(0)" Max="@VideoPlayer.Duration" Value="@VideoPlayer.PlaybackTime" OnValueChanged="@TimelineChanged"></SliderControl>
+    </div>
+
+    <div class="meta">
+
+        @if ( VideoPlayer.IsPaused )
+        {
+            <div class="control play" onclick="@VideoPlayer.Resume" tooltip="#menu.common.play"><i>play_arrow</i></div>
+        }
+        else
+        {
+            <div class="control play" onclick="@VideoPlayer.Pause" tooltip="#menu.common.pause"><i>pause</i></div>
+        }
+
+        @if ( !VideoPlayer.HasAudio )
+        {
+            <div class="control disabled" tooltip="#menu.home.no_sound"><i>volume_off</i></div>
+        }
+        else
+        {
+            <div class="volume">
+                @if ( VideoPlayer.Muted )
+                {
+                    <div class="control" onclick="@( () => VideoPlayer.Muted = false )" tooltip="#menu.home.unmute"><i>volume_off</i></div>
+                }
+                else
+                {
+                    <div class="control" onclick="@( () => VideoPlayer.Muted = true )" tooltip="#menu.home.mute"><i>volume_up</i></div>
+                }
+
+                <SliderControl Min="@(0)" Max="@(1)" Step="@(0.01f)" Value="@VideoPlayer.Audio.Volume" OnValueChanged="@VolumeChanged"></SliderControl>
+            </div>
+        }
+
+        <div class="time">
+            <label class="now">@GetPlayback()</label>
+            <label class="sep">/</label>
+            <label class="total">@GetDuration()</label>
+        </div>
+
+    </div>
+
+</root>
+
+@code 
+{
+	public Sandbox.VideoPlayer VideoPlayer { get; set; }
+	static float Volume = 0.4f;
+
+	protected override void OnParametersSet ()
+	{
+		Volume = Game.Cookies.Get( "videoplayer.volume", Volume );
+
+		VideoPlayer.Audio.Volume = Volume;
+	}
+
+	protected override void OnClick(MousePanelEvent e)
+	{
+		base.OnClick(e);
+		e.StopPropagation();
+	}
+
+	protected override int BuildHash()
+	{
+		return System.HashCode.Combine( VideoPlayer, VideoPlayer?.PlaybackTime, VideoPlayer.IsPaused );
+	}
+
+	void TimelineChanged( float value )
+	{
+		VideoPlayer.Seek( value );
+	}
+
+	void VolumeChanged(float value)
+	{
+		Volume = value;
+		VideoPlayer.Audio.Volume = value;
+
+		Game.Cookies.Set( "videoplayer.volume", Volume );
+	}
+
+    string GetPlayback()
+    {
+        return TimeSpan.FromSeconds( VideoPlayer.PlaybackTime ).ToString( "mm\\:ss" ); //);
+    }
+
+    string GetDuration()
+    {
+        return TimeSpan.FromSeconds( VideoPlayer.Duration ).ToString( "mm\\:ss" );
+    }
+
+}

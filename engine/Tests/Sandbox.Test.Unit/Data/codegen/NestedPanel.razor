@@ -1,0 +1,36 @@
+@using Sandbox.UI
+@namespace TestComponents
+
+<div>
+	<div>
+		@this Nested content
+	</div>
+</div>
+
+<div>
+	<div>
+		Nested markup
+	</div>
+</div>
+
+<Panel>
+	<Panel>
+		Nested element w/ markup
+	</Panel>
+</Panel>
+
+<Panel>
+	<Panel>
+		@this Another nested element w/ content
+	</Panel>
+</Panel>
+
+<Label>
+	<Label>
+		<Label>
+			<Label>
+				Lots of nested labels, but not recursive
+			</Label>
+		</Label>
+	</Label>
+</Label>

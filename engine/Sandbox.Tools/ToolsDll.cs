@@ -1,0 +1,378 @@
+using NativeEngine;
+using Sandbox.Audio;
+using Sandbox.Engine;
+using Sandbox.Engine.Settings;
+using Sandbox.Internal;
+using Sandbox.Modals;
+using System;
+
+namespace Sandbox;
+
+internal class ToolsDll : IToolsDll
+{
+	static Logger log = new Logger( "ToolsDll" );
+
+	PackageLoader.Enroller AssemblyEnroller { get; set; }
+
+	public ToolsDll()
+	{
+		Global.Assembly = GetType().Assembly;
+	}
+
+	/// <inheritdoc />
+	public void SetRelativeMouseOverride( bool relative ) => g_pToolFramework2.SetOverrideCursor( relative );
+
+	/// <inheritdoc />
+	public bool IsApplicationActive => Native.QApp.IsApplicationActive();
+
+	public void Bootstrap()
+	{
+		EditorEvent.Init();
+		EditorEvent.RegisterAssembly( Global.Assembly );
+
+		Game.IsPlaying = false;
+
+		EditorTypeLibrary = new Sandbox.Internal.TypeLibrary();
+		EditorTypeLibrary.AddIntrinsicTypes();
+		EditorTypeLibrary.AddAssembly( typeof( Vector3 ).Assembly, false );
+		EditorTypeLibrary.AddAssembly( Global.Assembly, true ); // editor can access everything anyway
+		EditorTypeLibrary.AddAssembly( typeof( EngineLoop ).Assembly, false );
+		EditorTypeLibrary.AddAssembly( typeof( Facepunch.ActionGraphs.ActionGraph ).Assembly, false );
+
+		Sandbox.Internal.TypeLibrary.Editor = EditorTypeLibrary;
+
+		Sandbox.Generator.Processor.DefaultPackageAssetResolver = ResolvePackageAsset;
+
+		EditorCookie = new CookieContainer( "tools" );
+
+		// make sure mixer is initialized at least once
+		Mixer.ResetToDefault();
+
+		EditorShortcuts.RegisterShortcuts();
+	}
+
+	public void Exiting()
+	{
+		EditorEvent.Run( "app.exit" );
+		EditorCookie?.Save();
+		ProjectCookie?.Save();
+	}
+
+	public void RunEvent( string name ) => EditorEvent.Run( name );
+	public void RunEvent( string name, object argument ) => EditorEvent.Run( name, argument );
+	public void RunEvent( string name, object arg0, object arg1 ) => EditorEvent.Run( name, arg0, arg1 );
+	public void RunEvent<T>( Action<T> action ) => EditorEvent.RunInterface<T>( action );
+
+	/// <summary>
+	/// Called from <see cref="EngineLoop.OnClientOutput"/>,
+	/// this method exists because we can't access the scene editor session from GameMenuDll to render cameras in the game viewport FROM the editor scene
+	/// and we probably don't want to either
+	/// </summary>
+	public void OnRender()
+	{
+		SceneRenderingWidget.RenderAll();
+	}
+
+	public bool ConsoleFocus()
+	{
+		EditorWindow.ConsoleFocus();
+		return true;
+	}
+
+	public void ExitPlaymode()
+	{
+		if ( !Game.IsPlaying )
+			return;
+
+		EditorScene.Stop();
+	}
+
+	public void SetPlaying()
+	{
+		if ( Game.ActiveScene is null || !Game.ActiveScene.IsValid() )
+		{
+			return;
+		}
+
+		// Just incase we are ingame currently using the "connect" command we just stop the current session and start a new one, 
+		// so we dont end up with dupe GameSession
+		var sceneEditorSession = SceneEditorSession.All.FirstOrDefault( x => x.IsPlaying );
+		sceneEditorSession?.StopPlaying();
+
+		EditorScene.Play( true );
+	}
+
+	/// <summary>
+	/// Bootstrapping has finished. Close the splash screen and show the editor.
+	/// </summary>
+	public async Task Initialize()
+	{
+		// Associate .sbproj with the editor
+		FileAssociations.Create();
+
+		Log.Info( "Compiling base projects" );
+
+		//
+		// Compile our base projects first
+		//
+		using ( var _ = Sandbox.Engine.Bootstrap.StartupTiming?.ScopeTimer( "Tools - Compile Base Projects" ) )
+		{
+			if ( !await Project.CompileAsync() )
+			{
+				// If we can't compile base projects, bail - everything will be fucked
+				// Doesn't need to be descriptive because it's either we've fucked it, or the user has edited base files and fucked it.
+				throw new System.Exception( "Base projects failed to compile. Can't continue. (Check log file)" );
+			}
+		}
+
+		// Rebuild content path now because some projects are added during bootstrap
+		Editor.FileSystem.RebuildContentPath();
+		Editor.Application.ReloadStyles();
+
+		Assert.NotNull( GameInstanceDll.PackageLoader );
+		Assert.NotNull( GlobalGameNamespace.TypeLibrary );
+
+		Sandbox.GameInstanceDll.PackageLoader.ToolsMode = true;
+
+		AssemblyEnroller = Sandbox.GameInstanceDll.PackageLoader.CreateEnroller( "tools" );
+
+		Sandbox.GameInstanceDll.PackageLoader.HotloadWatch( GetType().Assembly );
+		Sandbox.GameInstanceDll.PackageLoader.OnAfterHotload = () =>
+		{
+			// here we're overriding what the GameMenu set,
+			// so we're gonna do that stuff too.
+			GlobalContext.Current.OnHotload();
+
+			foreach ( var session in SceneEditorSession.All )
+			{
+				session.Scene.OnHotload();
+			}
+
+			Event.Run( "hotloaded" );
+
+			// editor stuff
+			EditorEvent.Run( "hotloaded" );
+		};
+
+		AssemblyEnroller.OnAssemblyAdded = ( assembly ) =>
+		{
+			Log.Trace( $"Tools - Loading Assembly {assembly.Assembly} ({assembly.IsEditorAssembly})" );
+
+			if ( assembly.IsEditorAssembly )
+			{
+				EditorEvent.RegisterAssembly( assembly.Assembly );
+				ConVarSystem.AddAssembly( assembly.Assembly, $"editor.{assembly.Name.Replace( ".editor", "" )}" );
+				Sandbox.Mounting.Directory.AddAssembly( assembly.Assembly );
+			}
+
+			EditorTypeLibrary.AddAssembly( assembly.Assembly, true );
+			GameData.AddAssembly( assembly.Assembly );
+
+			if ( !StartupLoadProject.IsLoading )
+			{
+				// Can't do this during bootstrapping in case a resource references a
+				// type that hasn't been loaded yet.
+				if ( AssetType.UpdateCustomTypes() )
+				{
+					// If the types changed, re-import all the custom types from disk
+					AssetType.ImportCustomTypeFiles();
+				}
+			}
+		};
+
+		AssemblyEnroller.OnAssemblyRemoved = ( outgoing ) =>
+		{
+			if ( outgoing.IsEditorAssembly )
+			{
+				EditorEvent.UnregisterAssembly( outgoing.Assembly );
+				ConVarSystem.RemoveAssembly( outgoing.Assembly );
+				Sandbox.Mounting.Directory.RemoveAssembly( outgoing.Assembly );
+			}
+
+			EditorTypeLibrary.RemoveAssembly( outgoing.Assembly );
+			GameData.RemoveAssembly( outgoing.Assembly );
+			ManagedTools.AssembliesDirty = true;
+		};
+
+		GameResourceProcessor.Initialize();
+		PackageManager.OnPackageInstalledToContext += OnPackageInstalled;
+
+		// Hammer entity definitions: prop_static, etc.
+		GameData.AddAssembly( Global.Assembly );
+		GameData.AddAssembly( typeof( Model ).Assembly );
+
+		//
+		// Add all game addons to be compiled in tools mode, making them accessible for Hammer, Asset Editor, etc.
+		//
+		ManagedTools.AssembliesDirty = true;
+	}
+
+	/// <summary>
+	/// Load the startup project for the first time
+	/// </summary>
+	public async Task LoadProject()
+	{
+		await StartupLoadProject.Run();
+	}
+
+	/// <summary>
+	/// Called from the code generator, the job of this function is:
+	/// 1. Make sure the package is downloaded and installed
+	/// 2. Return the relative path to the primary asset
+	/// </summary>
+	string ResolvePackageAsset( string packageName )
+	{
+		Package package = Package.FetchAsync( packageName, false ).Result;
+		if ( package == null )
+		{
+			return null;
+		}
+
+		if ( StartupLoadProject.IsLoading )
+		{
+			StartupLoadProject.QueuePackageDownload( packageName );
+		}
+		else
+		{
+			MainThread.Queue( () => AssetSystem.InstallAsync( package ).Wait() );
+		}
+
+		return package?.PrimaryAsset;
+	}
+
+
+	private void OnPackageInstalled( PackageManager.ActivePackage package, string context )
+	{
+		log.Trace( $"OnPackageInstalled: {package.Package.FullIdent} {context}" );
+
+		// only load if a tools context
+		if ( context != "tools" && context != "hammer" && package.Package is not LocalPackage ) return;
+
+		// The menu addon should never leak into other projects, its loading is handled in MenuDll.
+		if ( package.Package is LocalPackage { Project.Config.Ident: "menu" } && Project.Current?.Config?.Ident != "menu" ) return;
+
+		log.Trace( $" - Loading: {package.Package.FullIdent}" );
+
+		// make sure it's loaded into our context
+		AssemblyEnroller.LoadPackage( package.Package.FullIdent );
+	}
+
+	public void OnFunctionKey( ButtonCode key, KeyboardModifiers modifiers )
+	{
+		var keys = Sandbox.Engine.KeyTranslation.CodeToString( key ).ToUpperInvariant();
+		if ( modifiers.HasFlag( KeyboardModifiers.Shift ) ) keys = "SHIFT+" + keys;
+		if ( modifiers.HasFlag( KeyboardModifiers.Alt ) ) keys = "ALT+" + keys;
+		if ( modifiers.HasFlag( KeyboardModifiers.Ctrl ) ) keys = "CTRL+" + keys;
+
+		EditorShortcuts.Invoke( keys, true );
+
+		// This is really just here for F5, if we stop the game session and defocus the game window, Qt is going to then run it's event
+		// The other option is, do we need to run EditorShortcuts from game mode? What is there other than F5?
+		EditorShortcuts._timeSinceGlobalShortcut = 0;
+	}
+
+	public void Spin()
+	{
+		BindSystem?.Tick();
+		Editor.Application.Spin();
+		EngineLoop.RunAsyncTasks();
+
+		NativeEngine.EngineGlobal.ToolsStallMonitor_IndicateActivity();
+	}
+
+	public void Tick()
+	{
+		// close progress windows if compile has finished
+		CompileStatus.CloseProgress();
+
+		// Make sure we agree about Time.Now during editor events while in play mode
+		if ( Game.IsPlaying && Game.ActiveScene is { } scene )
+		{
+			Time.Update( scene.TimeNow, scene.TimeDelta );
+		}
+
+		// Shift+Escape toggles the platform menu without releasing game focus.
+		if ( Game.IsPlaying && InputRouter.EditorPauseMenuWasPressed )
+		{
+			InputRouter.EditorPauseMenuWasPressed = false;
+			Input.EscapePressed = false;
+
+			using var scope = GlobalContext.MenuScope();
+			IModalSystem.Current?.PauseMenu();
+
+			return;
+		}
+
+		// Escape was pressed in game and wasn't swallowed. Return focus to the editor
+		// to release the captured mouse.
+		if ( Game.IsPlaying && Input.EscapePressed )
+		{
+			Input.EscapePressed = false;
+			EditorWindow.Focus();
+		}
+	}
+
+	/// <summary>
+	/// Registers exclusive Sandbox.Tools <see cref="Sandbox.IHandle"/> types
+	/// </summary>
+	public int RegisterHandle( IntPtr ptr, uint type ) => HandleTypes.RegisterHandle( ptr, type );
+
+	public object InspectedObject
+	{
+		get => EditorUtility.InspectorObject;
+		set => EditorUtility.InspectorObject = value;
+	}
+
+	/// <summary>
+	/// Return true if the GameFrame is visible
+	/// </summary>
+	[Obsolete]
+	public bool IsGameViewVisible => false;
+	public GameSurface GameSurface
+	{
+		get
+		{
+			var playWidget = GameMode.PlayWidget;
+			var window = playWidget is not null ? GameMode.PlayWindow : WindowInput.GetEditorMainWindow();
+			return new( window, playWidget?.SwapChain ?? default, RenderSettings.Instance.VSync );
+		}
+	}
+
+	public async Task OnInitializeHost()
+	{
+		await CloudAsset.AddNewServerPackages();
+	}
+
+	void IToolsDll.RunFrame()
+	{
+		using ( Sandbox.Diagnostics.PerformanceStats.Timings.Editor.Scope() )
+		{
+			g_pToolFramework2.Tools_RunFrame();
+			g_pToolFramework2.Tools_OnIdle( 0 );
+			g_pToolFramework2.Tools_UnloadPending();
+		}
+	}
+
+	/// <summary>
+	/// Return a thumbnail for this asset. This is used by the ThumbLoader, which allows people to load
+	/// thumbs using thumb:resource/path.vmdl etc.
+	/// </summary>
+	public async Task<Bitmap> GetThumbnail( string filename )
+	{
+		var asset = AssetSystem.FindByPath( filename );
+		if ( asset is null ) return null;
+
+		var thumb = await AssetThumbnail.GetAssetThumbAsync( asset );
+		if ( thumb is null ) return null;
+
+		// Sorry - we have no fast GetPixels
+		var pixels = thumb.GetPng();
+		return Bitmap.CreateFromBytes( pixels );
+	}
+
+	/// <summary>
+	/// Public access to the editor system, from Game-side
+	/// </summary>
+	public EditorSystem ActiveEditor { get; } = new EditorSystemPublic();
+
+}

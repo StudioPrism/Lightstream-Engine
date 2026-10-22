@@ -1,0 +1,545 @@
+using Sandbox.Engine;
+using Sandbox.Engine.Settings;
+using Sandbox.Modals;
+using Sandbox.Services;
+using System;
+using System.Net;
+
+namespace Sandbox;
+
+
+[Hide]
+public static partial class MenuUtility
+{
+	public static Action Tick { get; set; }
+
+	/// <summary>Whether higher-resolution texture data is currently downloading.</summary>
+	public static bool IsTextureWebStreamingActive => NativeGlue.Resources.IsTextureWebStreamingActive();
+
+	public static void SetModalSystem( IModalSystem system )
+	{
+		IModalSystem.Current = system;
+	}
+
+	public static void AddLogger( Action<LogEvent> logger )
+	{
+		Sandbox.Diagnostics.Logging.OnMessage += logger;
+	}
+
+	public static void RemoveLogger( Action<LogEvent> logger )
+	{
+		Sandbox.Diagnostics.Logging.OnMessage -= logger;
+	}
+
+	public static void AddChatListener( Action<ChatMessageEvent> listener )
+	{
+		Platform.Chat.OnMessage += listener;
+	}
+
+	public static void RemoveChatListener( Action<ChatMessageEvent> listener )
+	{
+		Platform.Chat.OnMessage -= listener;
+	}
+
+	/// <summary>
+	/// Collect the subtitle lines being spoken right now, from the running game's
+	/// scene (or the menu's own scene when not in a game). Used by the menu's
+	/// subtitle overlay.
+	/// </summary>
+	public static void GetSubtitles( List<SubtitlesGameObjectSystem.Line> lines )
+	{
+		// We're called from the menu context, but the active scene has to be
+		// resolved in the game's - Game.ActiveScene is per-context, and the menu
+		// context's is the menu background scene, not the game the player is in
+		Scene scene;
+
+		using ( GlobalContext.GameScope() )
+		{
+			scene = Application.GetActiveScene();
+		}
+
+		if ( !scene.IsValid() )
+			return;
+
+		scene.GetSystem<SubtitlesGameObjectSystem>()?.GetActive( lines );
+	}
+
+	public static ConCmdAttribute.AutoCompleteResult[] AutoComplete( string text, int maxCount )
+	{
+		return ConVarSystem.GetAutoComplete( text, maxCount );
+	}
+
+	public static void SkipAllTransitions()
+	{
+		IMenuDll.Current?.RunEvent( "ui.skiptransitions" );
+	}
+
+	public static async Task<bool> RefreshAccountInfo()
+	{
+		await AccountInformation.Update();
+		return Api.IsConnected;
+	}
+
+	/// <summary>
+	/// If current game is active, return the package
+	/// </summary>
+	public static Package GamePackage => Application.GamePackage;
+
+	/// <summary>
+	/// How long the current game session has been running, or zero when there isn't one.
+	/// </summary>
+	public static TimeSpan SessionTime => TimeSpan.FromSeconds( Api.Activity.SessionSeconds );
+
+
+	public static SceneWorld CreateSceneWorld()
+	{
+		return new SceneWorld { IsTransient = false };
+	}
+
+#nullable enable
+	/// <summary>
+	/// Open an 'open file' dialog
+	/// </summary>
+	public static string? OpenFileDialog()
+	{
+		var r = NativeEngine.WindowsGlue.FindFile();
+		if ( string.IsNullOrEmpty( r ) ) return null;
+		return r;
+	}
+#nullable disable
+
+	/// <summary>
+	/// Open a folder 
+	/// </summary>
+	public static void OpenFolder( string path )
+	{
+		System.Diagnostics.Process.Start( new System.Diagnostics.ProcessStartInfo()
+		{
+			FileName = path,
+			UseShellExecute = true,
+			Verb = "open"
+		} );
+	}
+
+	/// <summary>
+	/// Open a url
+	/// </summary>
+	public static void OpenUrl( string path )
+	{
+		System.Diagnostics.Process.Start( new System.Diagnostics.ProcessStartInfo()
+		{
+			FileName = path,
+			UseShellExecute = true,
+			Verb = "open"
+		} );
+	}
+
+	static List<Friend> _friendList;
+
+	/// <summary>
+	/// Get all friends.
+	/// </summary>
+	public static IEnumerable<Friend> Friends
+	{
+		get
+		{
+			//
+			// querying this once should be enough, unless they add a new friend or something
+			//
+			if ( _friendList is null )
+			{
+				_friendList = Steamworks.SteamFriends.GetFriends().Select( x => new Friend( x ) ).ToList();
+			}
+
+			return _friendList;
+		}
+	}
+
+
+	/// <summary>
+	/// Number of seconds escape has been held down
+	/// </summary>
+	public static float EscapeTime => InputRouter.EscapeTime;
+
+	/// <summary>
+	/// Join the game a friend is in
+	/// </summary>
+	public static void JoinFriendGame( Friend friend )
+	{
+		var connectString = friend.GetRichPresence( "connect" );
+		if ( string.IsNullOrWhiteSpace( connectString ) ) return;
+
+		Api.Activity.GameRequested( new( "friend" ) );
+
+		connectString = connectString.Replace( "+connect", "" );
+		connectString = connectString.Replace( " ", "" );
+
+		// Should be left with a Steam Id but otherwise try connecting by IP.
+		if ( ulong.TryParse( connectString, out ulong lobbySteamId ) )
+		{
+			ConsoleSystem.Run( $"connect {lobbySteamId}" );
+		}
+		else
+		{
+			var ipAddress = IPEndPoint.Parse( connectString );
+			ConsoleSystem.Run( $"connect {ipAddress}" );
+		}
+	}
+
+	/// <summary>
+	/// Are we in a game we can invite friends to?
+	/// </summary>
+	public static bool CanInviteToGame => !string.IsNullOrWhiteSpace( Networking.GetInviteConnectString() );
+
+	/// <summary>
+	/// Invite a friend to the current game.
+	/// </summary>
+	public static bool InviteFriendGame( Friend friend )
+	{
+		var connectString = Networking.GetInviteConnectString();
+		if ( string.IsNullOrWhiteSpace( connectString ) ) return false;
+
+		// Private games only let in who they're told to
+		Networking.AllowJoin( friend.Id );
+
+		return friend.InviteToGame( connectString );
+	}
+
+	/// <summary>
+	/// We might be running the game from sbox.game, so we want the menu system to open the game immediately
+	/// </summary>
+	public static string StartupGameIdent => Utility.CommandLine.GetSwitch( "-rungame", null );
+
+	/// <summary>The external hostname carried by the website's Play button, when the browser supplied one.</summary>
+	public static string StartupWebReferrer => Api.Activity.NormalizeWebReferrer( Utility.CommandLine.GetSwitch( "-webreferrer", null ) );
+
+	/// <summary>
+	/// This is called when the cancel button is pressed when loading. 
+	/// We should disconnect and leave the game.
+	/// </summary>
+	public static void CancelLoading()
+	{
+		Api.Activity.CancelRequest( Api.Activity.PendingRequest );
+		IGameInstanceDll.Current.Disconnect();
+	}
+
+	/// <summary>
+	/// Set a console variable. Unlike ConsoleSystem.*, this is unprotected and allows any console variable to be changed.
+	/// </summary>
+	public static void SetConsoleVariable( string name, object value )
+	{
+		ConVarSystem.SetValue( name, value?.ToString(), true );
+	}
+
+	/// <summary>
+	/// Access to the client's render settings
+	/// </summary>
+	public static RenderSettings RenderSettings => Sandbox.Engine.Settings.RenderSettings.Instance;
+
+	/// <summary>
+	/// The graphics preset this machine should start on.
+	/// </summary>
+	public static GraphicsPreset DetectGraphicsPreset() => Sandbox.Engine.Settings.RenderSettings.DetectPreset();
+
+	/// <summary>
+	/// What a graphics preset writes, keyed by setting name. Lets the settings menu tell which
+	/// preset unsaved edits add up to without keeping its own copy of the preset tables.
+	/// </summary>
+	public static IReadOnlyDictionary<string, string> GraphicsPresetValues( GraphicsPreset preset ) =>
+		Sandbox.Engine.Settings.RenderSettings.SettingsFor( preset );
+
+	/// <summary>What a post-processing preset writes, keyed by setting name.</summary>
+	public static IReadOnlyDictionary<string, string> PostProcessPresetValues( PostProcessQuality preset ) =>
+		Sandbox.Engine.Settings.RenderSettings.SettingsFor( preset );
+
+	/// <summary>
+	/// Listen to the voice
+	/// </summary>
+	public static void SetVoiceListen( bool b )
+	{
+		if ( b )
+		{
+			PartyRoom.Current?.SetBroadcastVoice();
+		}
+	}
+
+	/// <summary>
+	/// Connect to a lobby and close all open modals.
+	/// </summary>
+	public static void Connect( ulong lobbyId )
+	{
+		CloseAllModals();
+		Api.Activity.GameRequested( new( "server" ) );
+		Networking.Connect( lobbyId );
+	}
+
+	/// <summary>
+	/// Try to join one lobby, e.g. an open session on a map.
+	/// </summary>
+	public static Task<bool> TryJoinLobby( ulong lobbyId )
+	{
+		Api.Activity.GameRequested( new( "quickplay" ), replace: false );
+		return Networking.TryConnectSteamId( lobbyId );
+	}
+
+	/// <summary>
+	/// Close every open modal
+	/// </summary>
+	public static void CloseAllModals()
+	{
+		IModalSystem.Current?.CloseAll();
+	}
+
+	/// <summary>
+	/// Get the player's friend activity feed
+	/// </summary>
+	public static Task<Feed[]> GetPlayerFeed( int take = 20 ) => Feed.GetFeed( take );
+
+	/// <summary>
+	/// How many notifications does the player have?
+	/// </summary>
+	public static Task<int> GetNotificationCount() => Notification.GetCount();
+
+	/// <summary>
+	/// Mark the player's notifications as all read. Call when viewing notifications.
+	/// </summary>
+	public static Task<int> MarkNotificationsRead() => Notification.MarkRead();
+
+	/// <summary>
+	/// Get a list of notifications
+	/// </summary>
+	public static Task<Notification[]> GetNotifications( int count ) => Notification.Get( count );
+
+	/// <summary>
+	/// Get a list of recent achievement progress
+	/// </summary>
+	public static Task<AchievementOverview[]> GetAchievementOverviews( int count ) => AchievementOverview.GetFeed( count );
+
+	/// <summary>
+	/// Get a list of recent achievement progress
+	/// </summary>
+	public static Task SaveAvatar( ClothingContainer container, bool isActive, int slot ) => container.Store( isActive, slot );
+
+	/// <summary>
+	/// Delete avatar in slot x
+	/// </summary>
+	public static Task DeleteAvatar( int slot )
+	{
+		return Backend.Storage.Delete( (long)Utility.Steam.SteamId, "facepunch.avatar", "avatar", $"{slot}" );
+	}
+
+	/// <summary>
+	/// Delete all avatars, return to default
+	/// </summary>
+	public static async Task DeleteAvatars()
+	{
+		await Backend.Storage.Drop( (long)Utility.Steam.SteamId, "facepunch.avatar", "avatar" );
+		await Backend.Storage.Drop( (long)Utility.Steam.SteamId, "facepunch.avatar", "avatar.active" );
+	}
+
+	/// <summary>
+	/// Invite someone to the current party. If one exists
+	/// </summary>
+	public static void InviteToParty( SteamId steamid )
+	{
+		PartyRoom.Current?.InviteFriend( steamid );
+	}
+
+	/// <summary>
+	/// The party members shared by this friend, including people outside our friends list.
+	/// Older clients may not share a roster. Requests missing Steam names as they are encountered.
+	/// </summary>
+	public static Friend[] GetPartyMembers( Friend friend )
+	{
+		if ( string.IsNullOrEmpty( friend.GetRichPresence( "party_id" ) ) ) return [];
+		var members = (friend.GetRichPresence( "party_members" ) ?? "").Split( ',' ).Take( 12 )
+			.Select( x => ulong.TryParse( x, out var id ) ? id : 0 ).Where( x => x != 0 ).Distinct()
+			.Select( x => new Friend( x ) ).ToArray();
+		foreach ( var member in members )
+			Steamworks.SteamFriends.RequestUserInformation( member.Id );
+		return members;
+	}
+
+	/// <summary>
+	/// Whether this friend can be invited to your current (or about-to-be-created) party -
+	/// ie. not you, and not already in it. Offline doesn't rule them out: people set to appear
+	/// offline in Steam are often really there, and still get the invite.
+	/// </summary>
+	public static bool CanInviteToParty( Friend friend )
+	{
+		if ( friend.IsMe ) return false;
+		if ( PartyRoom.Current is not null && PartyRoom.Current.Members.Contains( friend ) ) return false;
+
+		return true;
+	}
+
+	/// <summary>
+	/// Opens the invite overlay
+	/// </summary>
+	public static void InviteOverlayToParty()
+	{
+		PartyRoom.Current?.InviteFriend();
+	}
+
+	/// <summary>
+	/// Post a review for a package
+	/// </summary>
+	public static Task PostReview( string packageIdent, Sandbox.Services.Review.ReviewScore score, string content, Sandbox.Services.Review.PositiveTags positives, Sandbox.Services.Review.NegativeTags negatives )
+	{
+		return Sandbox.Services.Review.Post( packageIdent, score, content, positives, negatives );
+	}
+
+	/// <summary>
+	/// Post a report for a package
+	/// </summary>
+	public static Task PostReport( string packageIdent, Sandbox.Services.Reports.Reason reason, string content )
+	{
+		return Sandbox.Services.Reports.Post( packageIdent, reason, content );
+	}
+
+	/// <summary>
+	/// Begin linking a third-party service to the player's account (eg "Twitch"). Returns a URL
+	/// to open in a browser, where the player authorizes the service. Completion is delivered
+	/// asynchronously to <see cref="IBackendListener.OnServiceLinked"/>, so there's no need to
+	/// poll - just refresh <see cref="ListServices"/> when notified.
+	/// </summary>
+	public static async Task<string> BeginServiceLink( string service )
+	{
+		var result = await Backend.Account.BeginServiceLink( service );
+		return result.Url;
+	}
+
+	/// <summary>
+	/// List the player's linked services with their public info (name, avatar). Contains no tokens.
+	/// </summary>
+	public static async Task<List<LinkedService>> ListServices()
+	{
+		var services = await Backend.Account.ListServices();
+		return services.Select( x => new LinkedService( x.Type, x.Id, x.Name, x.Avatar ) ).ToList();
+	}
+
+	public static async Task SetMountState( string name, bool state )
+	{
+		await Sandbox.Mounting.Directory.SetMountState( name, state );
+
+		if ( !Application.IsEditor )
+		{
+			Sandbox.Mounting.MountConfig.Save();
+		}
+	}
+
+	/// <summary>
+	/// Allows async tasks to wait to be executed in the menu context
+	/// </summary>
+	public static void RunTask( Func<Task> func )
+	{
+		// Post the *whole* function into the target context
+		MenuDll.AsyncContext.Post( async _ =>
+		{
+			await func().ConfigureAwait( true );
+
+		}, null );
+	}
+
+}
+
+/// <summary>
+/// Public, token-free info about a third-party service account (eg Twitch) linked to the player.
+/// This is the menu-facing proxy for the backend's service link data.
+/// </summary>
+public record struct LinkedService( string Service, string Id, string Name, string Avatar );
+
+public class StoragePublish
+{
+	Ugc.UgcPublisher item;
+
+	public ulong ItemId => item?.ItemId ?? 0;
+
+	public string Title { get; set; }
+	public string Description { get; set; }
+	public string Metadata { get; set; }
+	public Storage.Visibility Visibility { get; set; } = Storage.Visibility.Public;
+	public Dictionary<string, string> KeyValues { get; set; }
+	public HashSet<string> Tags { get; set; }
+	public Bitmap Thumbnail { get; set; }
+	public BaseFileSystem FileSystem { get; set; }
+
+	/// <summary>
+	/// If set, update this existing workshop item instead of creating a new one.
+	/// </summary>
+	public ulong PublishedFileId { get; set; }
+
+	public async Task Submit()
+	{
+		if ( PublishedFileId != 0 )
+		{
+			item = Sandbox.Services.Ugc.OpenItem( PublishedFileId );
+		}
+		else
+		{
+			item = await Sandbox.Services.Ugc.CreateCommunityItem();
+		}
+
+		string _imagePath = null;
+		string _dataPath = null;
+
+		item.SetTitle( Title );
+		item.SetDescription( Description );
+		item.SetMetaData( Metadata );
+		item.SetVisibility( Visibility );
+
+		if ( KeyValues != null )
+		{
+			foreach ( var kv in KeyValues )
+			{
+				item.SetKeyValue( kv.Key, kv.Value );
+			}
+		}
+
+		if ( Tags != null )
+		{
+			foreach ( var tag in Tags )
+			{
+				item.SetTag( tag );
+			}
+		}
+
+		// Save thumbnail to a temp file
+		if ( Thumbnail != null )
+		{
+			_imagePath = System.IO.Path.GetTempFileName() + ".png";
+			System.IO.File.WriteAllBytes( _imagePath, Thumbnail.ToPng() );
+			item.SetPreviewImage( _imagePath );
+		}
+
+		// Copy files from virtual filesystem to a temp folder
+		if ( FileSystem != null )
+		{
+			_dataPath = System.IO.Path.GetTempPath() + "/" + System.Guid.NewGuid().ToString();
+			var files = FileSystem.FindFile( "/", "*", true );
+
+			foreach ( var file in files )
+			{
+				var srcPath = System.IO.Path.Combine( "/", file );
+				var destPath = System.IO.Path.Combine( _dataPath, file );
+
+				System.IO.Directory.CreateDirectory( System.IO.Path.GetDirectoryName( destPath ) );
+				System.IO.File.WriteAllBytes( destPath, FileSystem.ReadAllBytes( srcPath ) );
+			}
+
+			item.SetContentFile( _dataPath );
+		}
+
+		item.SetKeyValue( "package", Game.Ident ); // TODO - walk the stack to determine what called it?
+		item.SetKeyValue( "version", Application.Version );
+
+		await item.Submit();
+
+		if ( _imagePath != null ) System.IO.File.Delete( _imagePath );
+		if ( _dataPath != null ) System.IO.Directory.Delete( _dataPath, true );
+	}
+
+	public float PercentComplete => item?.PercentComplete ?? 0f;
+	public bool IsPublishing => item?.IsPublishing ?? false;
+	public bool IsFinished => item?.IsFinished ?? false;
+}

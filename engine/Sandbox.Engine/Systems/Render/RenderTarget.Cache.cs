@@ -1,0 +1,180 @@
+﻿using NativeEngine;
+using System.Threading;
+
+namespace Sandbox;
+
+public sealed partial class RenderTarget
+{
+	static Lock _lock = new();
+	static List<RenderTarget> All = new();
+
+	/// <summary>
+	/// Get a temporary render target. You should dispose the returned handle when you're done to return the textures to the pool.
+	/// </summary>
+	/// <param name="width">Width of the render target you want.</param>
+	/// <param name="height">Height of the render target you want.</param>
+	/// <param name="colorFormat">The format for the color buffer. If set to default we'll use whatever the current pipeline is using.</param>
+	/// <param name="depthFormat">The format for the depth buffer.</param>
+	/// <param name="msaa">The number of msaa samples you'd like. Msaa render textures are a pain in the ass so you're probably gonna regret trying to use this.</param>
+	/// <param name="numMips">Number of mips you want in this texture. You probably don't want this unless you want to generate mips in a second pass.</param>
+	/// <param name="targetName">The optional name of the render target</param>
+	/// <returns>A RenderTarget that is ready to render to.</returns>
+	public static RenderTarget GetTemporary( int width, int height, ImageFormat colorFormat = ImageFormat.Default, ImageFormat depthFormat = ImageFormat.Default, MultisampleAmount msaa = MultisampleAmount.MultisampleNone, int numMips = 1, string targetName = "" )
+	{
+		const int maxSize = 1024 * 16;
+
+		if ( width <= 0 ) throw new ArgumentException( $"width should be higher than 0 (was {width}x{height})" );
+		if ( width > maxSize ) throw new ArgumentException( $"width should be lower than ({maxSize})" );
+		if ( height <= 0 ) throw new ArgumentException( $"height should be higher than 0 (was {width}x{height})" );
+		if ( height > maxSize ) throw new ArgumentException( $"height should be higher than {maxSize}" );
+		if ( numMips <= 0 ) throw new ArgumentException( $"numMips should be higher than 0 (was {width}x{height}x{numMips})" );
+		if ( numMips > 1 && msaa != MultisampleAmount.MultisampleNone ) throw new ArgumentException( $"Texture cannot have both msaa and mips at same time" );
+
+		numMips = Math.Min( numMips, CalculateMaxMipCount( width, height ) );
+
+		if ( colorFormat == ImageFormat.Default )
+			colorFormat = Graphics.IdealColorFormat;
+
+		if ( depthFormat == ImageFormat.Default )
+			depthFormat = g_pRenderDevice.IsUsing32BitDepthBuffer() ? ImageFormat.D32FS8 : ImageFormat.D24S8;
+
+		// Resolve this once, so the key matches the sample count the texture is created with
+		if ( msaa == MultisampleAmount.MultisampleScreen )
+			msaa = Graphics.IsActive ? Graphics.IdealMsaaLevel : CSceneSystem.GetMainSwapChainMultisampleType().FromEngine();
+
+		int hash = HashCode.Combine( width, height, colorFormat, depthFormat, numMips, msaa, targetName );
+
+		RenderTarget rt = null;
+
+		lock ( _lock )
+		{
+			// Not FirstOrDefault - the predicate would capture hash and allocate a closure every call.
+			foreach ( var candidate in All )
+			{
+				if ( candidate.Loaned || candidate.CreationHash != hash ) continue;
+
+				rt = candidate;
+				break;
+			}
+
+			if ( rt == null )
+			{
+				// Depth formats can't legally be UAV and they generally hate having mips.
+				// An R32 or similar is usually bound as a depth target if you want those. (e.g depth pyramid)
+				bool realDepthFormat = depthFormat.IsDepthFormat();
+
+				var size = new Vector2( width, height );
+				var rtColor = colorFormat == ImageFormat.None ? null : Texture.CreateRenderTarget().WithFormat( colorFormat ).WithMSAA( msaa ).WithSize( size ).WithMips( numMips ).WithUAVBinding().Create( $"__cache_color_{targetName}_{hash}" );
+				var rtDepth = depthFormat == ImageFormat.None ? null : Texture.CreateRenderTarget().WithFormat( depthFormat ).WithMSAA( msaa ).WithSize( size ).WithMips( realDepthFormat ? 1 : numMips ).WithUAVBinding( !realDepthFormat ).Create( $"__cache_depth_{targetName}_{hash}" );
+
+				rt = new RenderTarget()
+				{
+					Loaned = true,
+					CreationHash = hash,
+					ColorTarget = rtColor,
+					DepthTarget = rtDepth,
+					Width = width,
+					Height = height
+				};
+
+				All.Add( rt );
+			}
+
+			rt.Loaned = true;
+			rt.FramesSinceUsed = 0;
+		}
+
+		return rt;
+	}
+
+	internal static int CalculateMaxMipCount( int width, int height )
+	{
+		return (int)Math.Log2( Math.Max( width, height ) ) + 1; // matt: this is correct, do not fucking tocuh it
+	}
+
+	/// <summary>
+	/// Get a temporary render target. You should dispose the returned handle when you're done to return the textures to the pool.
+	/// </summary>
+	/// <param name="sizeFactor">Divide the screen size by this factor. 2 would be half screen sized. 1 for full screen sized.</param>
+	/// <param name="colorFormat">The format for the color buffer. If null we'll choose the most appropriate for where you are in the pipeline.</param>
+	/// <param name="depthFormat">The format for the depth buffer.</param>
+	/// <param name="msaa">The number of msaa samples you'd like. Msaa render textures are a pain in the ass so you're probably gonna regret trying to use this.</param>
+	/// <param name="numMips">Number of mips you want in this texture. You probably don't want this unless you want to generate mips in a second pass.</param>
+	/// <param name="targetName">The optional name of the render target</param>
+	/// <returns>A RenderTarget that is ready to render to.</returns>
+	public static RenderTarget GetTemporary( int sizeFactor, ImageFormat colorFormat = ImageFormat.Default, ImageFormat depthFormat = ImageFormat.Default, MultisampleAmount msaa = MultisampleAmount.MultisampleNone, int numMips = 1, string targetName = "" )
+	{
+		if ( sizeFactor <= 0 )
+			throw new ArgumentException( "cannot be lower than 1", nameof( sizeFactor ) );
+
+		var ss = Graphics.Viewport.Size;
+
+		if ( ss.x < 8 || ss.y < 8 )
+		{
+			Log.Warning( $"Really small viewport {ss}, forcing to 8x8" );
+			ss = 8;
+		}
+
+		var (width, height) = ScaleDownSize( ss, sizeFactor );
+
+		return GetTemporary( width, height, colorFormat, depthFormat, msaa, numMips, targetName );
+	}
+
+	/// <summary>
+	/// A viewport divided by a downsample factor, never smaller than a pixel. A big factor
+	/// against a short viewport - the tail of a bloom chain, say - would otherwise round an
+	/// axis down to zero, which isn't a render target you can make.
+	/// </summary>
+	internal static (int Width, int Height) ScaleDownSize( Vector2 viewport, int sizeFactor )
+	{
+		var width = Math.Max( (int)(viewport.x / sizeFactor), 1 );
+		var height = Math.Max( (int)(viewport.y / sizeFactor), 1 );
+
+		return (width, height);
+	}
+
+	internal void Return( RenderTarget source )
+	{
+		source.Loaned = false;
+	}
+
+	/// <summary>
+	/// Called at the end of the frame. At this point none of the render targets that were loaned out
+	/// should be being used, so we can put them all back in the pool.
+	/// </summary>
+	internal static void EndOfFrame()
+	{
+		lock ( _lock )
+		{
+			for ( int i = All.Count - 1; i >= 0; i-- )
+			{
+				All[i].FramesSinceUsed++;
+				All[i].Loaned = false;
+
+				if ( All[i].FramesSinceUsed < 8 ) continue;
+
+				All[i].Destroy();
+				All.RemoveAt( i );
+			}
+		}
+	}
+
+	/// <summary>
+	/// Destroy all cached render targets immediately. Called during shutdown
+	/// to release native texture handles before the resource system tears down.
+	/// </summary>
+	internal static void Shutdown()
+	{
+		EndOfFrame();
+
+		lock ( _lock )
+		{
+			for ( int i = All.Count - 1; i >= 0; i-- )
+			{
+				All[i].Destroy();
+			}
+
+			All.Clear();
+		}
+	}
+}

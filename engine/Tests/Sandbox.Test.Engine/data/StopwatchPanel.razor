@@ -1,0 +1,29 @@
+﻿@namespace TestComponents
+@using System.Diagnostics;
+
+@for ( int i=0; i<10; i++)
+{
+    <div style="hello">
+        @for ( int j=0; j< 10; j++)
+        {
+        @i <div style="hello" @onclick=@Stop>poop</div>
+        }</div>
+}
+
+<div class="bigtext" @onclick=@Stop>
+    <div class="title @(Seconds < 5 ? "is-fucked" : "is-relax")">The time is @Formatted</div>
+    <div class="icon"><i>time</i></div>
+</div>
+
+
+@code 
+{
+    public string Formatted => sw.Elapsed.ToString();
+    public float Seconds => (float)sw.Elapsed.TotalSeconds;
+    Stopwatch sw = Stopwatch.StartNew();
+
+    public void Stop()
+    {
+        sw.Stop();
+    }
+}

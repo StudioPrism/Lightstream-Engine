@@ -1,0 +1,1008 @@
+﻿using Editor.NodeEditor;
+using Sandbox.MovieMaker;
+using Sandbox.MovieMaker.Properties;
+using Sandbox.UI;
+using System.Diagnostics.CodeAnalysis;
+using System.Linq;
+using System.Reflection;
+
+using DisplayInfo = Sandbox.MovieMaker.Properties.DisplayInfo;
+
+namespace Editor.MovieMaker;
+
+#nullable enable
+
+/// <summary>
+/// An item in the <see cref="TrackListWidget"/>, showing the name of a track with buttons to configure it.
+/// </summary>
+public partial class TrackWidget : Widget
+{
+	public TrackListWidget TrackList { get; }
+	public new TrackWidget? Parent { get; }
+
+	public new IEnumerable<TrackWidget> Children => _children;
+
+	public TrackView View { get; }
+
+	protected Session Session { get; }
+
+	RealTimeSince _timeSinceInteraction = 1000;
+
+	private readonly Label? _label;
+	private readonly Button _collapseButton;
+	private readonly Button _lockButton;
+	private readonly Layout _childLayout;
+	private readonly SynchronizedSet<TrackView, TrackWidget> _children;
+
+	private ControlWidget? _controlWidget;
+
+	public TrackWidget( TrackListWidget trackList, TrackWidget? parent, TrackView view )
+		: base( (Widget?)parent ?? trackList )
+	{
+		TrackList = trackList;
+		Parent = parent;
+		Session = trackList.Session;
+
+		View = view;
+		FocusMode = FocusMode.TabOrClickOrWheel;
+		VerticalSizeMode = SizeMode.CanGrow;
+
+		_children = new SynchronizedSet<TrackView, TrackWidget>(
+			AddChildTrack, RemoveChildTrack, UpdateChildTrack );
+
+		ToolTip = View.Description;
+
+		View.Changed += View_Changed;
+		View.ValueChanged += View_ValueChanged;
+
+		Layout = Layout.Column();
+
+		var row = Layout.AddRow();
+
+		row.Spacing = 4f;
+		row.Margin = 4f;
+
+		_childLayout = Layout.Add( Layout.Column() );
+		_childLayout.Margin = new Margin( 8f, 0f, 0f, 0f );
+
+		_collapseButton = new CollapseButton( this );
+		row.Add( _collapseButton );
+
+		if ( !AddReferenceControl( row ) )
+		{
+			row.AddSpacingCell( 8f );
+
+			_label = row.Add( new Label( view.Target.Name ) { Color = Color.White } );
+		}
+
+		row.AddStretchCell();
+		row.AddSpacingCell( 24f );
+
+		_lockButton = row.Add( new LockButton( this ) );
+
+		View_Changed( view );
+	}
+
+	private TrackWidget AddChildTrack( TrackView source ) => new( TrackList, this, source );
+	private void RemoveChildTrack( TrackWidget item ) => item.Destroy();
+	private bool UpdateChildTrack( TrackView source, TrackWidget item ) => item.UpdateLayout();
+
+	public bool UpdateLayout()
+	{
+		_children.Update( View.IsExpanded ? View.Children : [] );
+		_childLayout.Clear( false );
+
+		foreach ( var child in _children )
+		{
+			_childLayout.Add( child );
+		}
+
+		return true;
+	}
+
+	private bool AddReferenceControl( Layout layout )
+	{
+		if ( View.Target is not ITrackReference reference ) return false;
+		if ( View.IsBoneObject ) return false;
+
+		// Add control to retarget a scene reference (Component / GameObject)
+
+		_controlWidget = null;
+
+		if ( View.Track is ProjectSequenceTrack )
+		{
+			//
+		}
+		else if ( reference is ITrackReference<GameObject> goReference )
+		{
+			var property = EditorTypeLibrary.CreateProperty( reference.Name,
+				() => goReference.Value, value =>
+				{
+					goReference.Bind( value );
+					View.TrackList.Session.Player.UpdateTargets();
+				} );
+
+			_controlWidget = new GameObjectControlWidget( property )
+			{
+				ShowFullName = false,
+				MissingName = View.Name
+			};
+		}
+		else
+		{
+			var helperType = typeof( ReflectionHelper<> ).MakeGenericType( reference.TargetType );
+			var createControlMethod = helperType.GetMethod( nameof( ReflectionHelper<IValid>.CreateControlWidget ),
+				BindingFlags.Static | BindingFlags.Public )!;
+
+			_controlWidget = (ControlWidget)createControlMethod.Invoke( null, [View.Track, reference] )!;
+		}
+
+		if ( !_controlWidget.IsValid() ) return false;
+
+		_controlWidget.MaximumWidth = 300;
+
+		layout.Add( _controlWidget );
+		return true;
+	}
+
+	private void View_Changed( TrackView view )
+	{
+		_collapseButton.Visible = view.Children.Count > 0;
+
+		_lockButton.Update();
+		_collapseButton.Update();
+
+		_label?.Color = !View.IsLocked ? IsSelected ? Color.White : Color.White.Darken( 0.4f ) : Color.White.Darken( 0.6f );
+		_controlWidget?.Enabled = !View.IsLocked;
+
+		Update();
+	}
+
+	private void View_ValueChanged( TrackView view )
+	{
+		_timeSinceInteraction = 0f;
+
+		Update();
+	}
+
+	public override void OnDestroyed()
+	{
+		View.Changed -= View_Changed;
+		View.ValueChanged -= View_ValueChanged;
+
+		base.OnDestroyed();
+	}
+
+	protected override void OnMousePress( MouseEvent e )
+	{
+		base.OnMousePress( e );
+
+		if ( !e.MiddleMouseButton )
+		{
+			e.Accepted = true;
+		}
+	}
+
+	protected override void OnMouseClick( MouseEvent e )
+	{
+		base.OnMouseClick( e );
+
+		if ( !e.LeftMouseButton ) return;
+
+		if ( e.HasCtrl )
+		{
+			View.ToggleSelect();
+		}
+		else if ( e.HasShift )
+		{
+			View.RangeSelect();
+		}
+		else
+		{
+			View.Select();
+		}
+
+		e.Accepted = true;
+	}
+
+	protected override void OnDoubleClick( MouseEvent e )
+	{
+		View.InspectProperty();
+
+		e.Accepted = true;
+	}
+
+	protected override void OnMouseEnter()
+	{
+		View.IsHovered = true;
+
+		ToolTip = View.Description;
+
+		base.OnMouseEnter();
+	}
+
+	protected override void OnMouseLeave()
+	{
+		View.IsHovered = false;
+
+		base.OnMouseLeave();
+	}
+
+	protected override Vector2 SizeHint()
+	{
+		return 32;
+	}
+
+	public bool IsSelected => View.IsSelected;
+
+	protected override void OnPaint()
+	{
+		Paint.Antialiasing = false;
+		Paint.SetBrushAndPen( View.BackgroundColor );
+		Paint.DrawRect( new Rect( LocalRect.Left + 1f, LocalRect.Top + 1f, LocalRect.Width - 2f, Timeline.TrackHeight - 2f ), 4 );
+
+		if ( View.Target is ITrackReference { IsAutoCreatedTarget: true } )
+		{
+			var saveRect = new Rect( LocalRect.Right - 58f, 1f, Timeline.TrackHeight, Timeline.TrackHeight );
+
+			Paint.SetPen( Theme.Text );
+			Paint.DrawIcon( saveRect, "person_add", 16f );
+		}
+
+		if ( _timeSinceInteraction < 2.0f )
+		{
+			var delta = _timeSinceInteraction.Relative.Remap( 2.0f, 0, 0, 1 );
+			Paint.ClearPen();
+			Paint.SetBrush( Theme.Yellow.WithAlpha( delta ) );
+			Paint.DrawRect( new Rect( LocalRect.Right - 4, LocalRect.Top, 32, Timeline.TrackHeight ) );
+			Update();
+		}
+	}
+
+	private Menu? _menu;
+
+	protected override void OnContextMenu( ContextMenuEvent e )
+	{
+		e.Accepted = true;
+
+		if ( !View.IsSelected )
+		{
+			if ( (Application.KeyboardModifiers & KeyboardModifiers.Ctrl) != 0 )
+			{
+				View.ToggleSelect();
+			}
+			else if ( (Application.KeyboardModifiers & KeyboardModifiers.Shift) != 0 )
+			{
+				View.RangeSelect();
+			}
+			else
+			{
+				View.Select();
+			}
+		}
+
+		ShowContextMenu();
+	}
+
+	public void ShowContextMenu()
+	{
+		_menu = new Menu( this );
+
+		var trackViews = View.TrackList.SelectedTracks.ToArray();
+
+		if ( trackViews.Length == 1 )
+		{
+			_menu.AddHeading( $"{View.Title} Track" );
+
+			if ( View.Track is ProjectSequenceTrack sequenceTrack )
+			{
+				var rename = _menu.AddMenu( "Rename", "edit" );
+
+				rename.AddLineEdit( "Name", sequenceTrack.Name, autoFocus: true, onSubmit: OnRename );
+			}
+
+			AddCommonContextMenuOptions( _menu, trackViews );
+
+			if ( CanMoveToRoot )
+			{
+				_menu.AddOption( "Move to Root", "subdirectory_arrow_left", MoveToRoot );
+			}
+
+			if ( CanMoveToParent( out var parentTrack ) )
+			{
+				_menu.AddOption( "Move to Parent", "subdirectory_arrow_right", () => MoveToParent( parentTrack ) );
+			}
+
+			if ( CanHaveSubTracks )
+			{
+				CreateSubTrackMenu( _menu );
+			}
+		}
+		else
+		{
+			_menu.AddHeading( "Selected Tracks" );
+
+			AddCommonContextMenuOptions( _menu, trackViews );
+		}
+
+		_menu.OpenAtCursor();
+	}
+
+	private void AddCommonContextMenuOptions( Menu menu, IReadOnlyList<TrackView> trackViews )
+	{
+		var anyLocked = trackViews.Any( x => x.IsLockedSelf );
+		var anyUnlocked = trackViews.Any( x => !x.IsLockedSelf );
+
+		if ( anyUnlocked )
+		{
+			menu.AddOption( "Lock", "lock", () =>
+			{
+				foreach ( var track in trackViews )
+				{
+					track.IsLockedSelf = true;
+				}
+			} );
+		}
+
+		if ( anyLocked )
+		{
+			menu.AddOption( "Unlock", "lock_open", () =>
+			{
+				foreach ( var track in trackViews )
+				{
+					track.IsLockedSelf = false;
+				}
+			} );
+		}
+
+		var anyExpanded = trackViews.Any( x => x is { IsExpanded: true, Children.Count: > 0 } );
+		var anyCollapsed = trackViews.Any( x => x is { IsExpanded: false, Children.Count: > 0 } );
+
+		if ( anyCollapsed )
+		{
+			menu.AddOption( "Expand", "add", () =>
+			{
+				foreach ( var track in trackViews )
+				{
+					if ( track is { IsExpanded: false, Children.Count: > 0 } )
+					{
+						track.IsExpanded = true;
+					}
+				}
+
+				View.TrackList.Update();
+			} );
+		}
+
+		if ( anyExpanded )
+		{
+			menu.AddOption( "Collapse", "remove", () =>
+			{
+				foreach ( var track in trackViews )
+				{
+					if ( track is { IsExpanded: true, Children.Count: > 0 } )
+					{
+						track.IsExpanded = false;
+					}
+				}
+
+				View.TrackList.Update();
+			} );
+		}
+
+		menu.AddOption( "Remove", "delete", () =>
+		{
+			foreach ( var track in trackViews )
+			{
+				track.Remove();
+			}
+		} );
+
+		menu.AddOption( "Save As Sequence..", "theaters", () =>
+		{
+			var timeRange = new MovieTimeRange( 0, Session.Duration );
+
+			Session.Editor.SaveAsDialog( "Save As Sequence..",
+				() => Session.CreateSequence( [.. trackViews.SelectDescendants()], timeRange ),
+				result =>
+				{
+					using var historyScope = Session.History.Push( "Create Sequence" );
+
+					foreach ( var trackView in trackViews )
+					{
+						trackView.Track.Remove();
+					}
+
+					Session.GetOrCreateTrack( result.Resource ).AddBlock( result.StartTime, result.Resource );
+					Session.TrackList.Update();
+				} );
+		} );
+	}
+
+	private bool? GetAggregateLockState( IEnumerable<TrackView> trackViews )
+	{
+		var anyLocked = false;
+		var anyUnlocked = false;
+
+		foreach ( var view in trackViews )
+		{
+			if ( view.IsLockedSelf ) anyLocked = true;
+			else anyUnlocked = true;
+		}
+
+		return anyLocked == anyUnlocked ? null : anyLocked;
+	}
+
+	/// <summary>
+	/// True if this is a child GameObject track, and not representing a bone object.
+	/// </summary>
+	private bool CanMoveToRoot
+	{
+		get
+		{
+			if ( View is not { Target: ITrackReference<GameObject> reference, Parent: not null } )
+			{
+				return false;
+			}
+
+			// Don't allow moving bone tracks to root
+
+			return !reference.IsBound || (reference.Value?.Flags & GameObjectFlags.Bone) == 0;
+		}
+	}
+
+	/// <summary>
+	/// Should we show sub-track menu options?
+	/// </summary>
+	private bool CanHaveSubTracks => View.Track is not ProjectSequenceTrack && (View.Children.Count > 0 || TrackProperty.GetAll( View.Target ).Any());
+
+	/// <summary>
+	/// True if this is a GameObject track, and the object's parent also has a track that
+	/// this track isn't parented to.
+	/// </summary>
+	private bool CanMoveToParent( [NotNullWhen( true )] out IProjectReferenceTrack? parentTrack )
+	{
+		parentTrack = null;
+
+		if ( View is not { Target: ITrackReference<GameObject> reference } )
+		{
+			return false;
+		}
+
+		if ( !reference.IsBound || reference.Value is not { Parent: { } parent } )
+		{
+			return false;
+		}
+
+		parentTrack = TrackList.Session.GetTrack( parent ) as IProjectReferenceTrack;
+
+		if ( parentTrack is null )
+		{
+			return false;
+		}
+
+		// Already parented
+
+		return View.Parent?.Track != parentTrack;
+	}
+
+	private record AvailableTrackProperty( string Name, DisplayInfo Display, Type Type, Func<IProjectTrack> Create );
+
+	private void CreateSubTrackMenu( Menu parent )
+	{
+		parent.AddHeading( "Sub-Tracks" );
+
+		var menu = parent.AddMenu( "Add / Remove", "playlist_add_check" );
+
+		var session = TrackList.Session;
+		var availableTracks = new List<AvailableTrackProperty>();
+
+		if ( View.Target is ITrackReference<GameObject> { IsBound: true, Value: { Components.Count: > 0 } go } )
+		{
+			foreach ( var component in go.Components.GetAll() )
+			{
+				var type = component.GetType();
+				var typeDef = TypeLibrary.GetType( type );
+
+				availableTracks.Add( new AvailableTrackProperty( type.Name, new DisplayInfo( typeDef.Title, "Components", typeDef.Description, typeDef.Icon ), type,
+					() => session.GetOrCreateTrack( component ) ) );
+			}
+		}
+
+		foreach ( var property in TrackProperty.GetAll( View.Target ) )
+		{
+			availableTracks.Add( new AvailableTrackProperty( property.Name, property.Display, property.Type,
+				() => session.GetOrCreateTrack( View.Track, property.Name ) ) );
+		}
+
+		Action? updateActive = null;
+		LineEdit? filterLineEdit = null;
+
+		void UpdateOptions( string? filter )
+		{
+			updateActive = null;
+
+			menu.RemoveMenus();
+			menu.RemoveOptions();
+
+			foreach ( var widget in menu.Widgets )
+			{
+				if ( widget.IsAncestorOf( filterLineEdit! ) ) continue;
+
+				menu.RemoveWidget( widget );
+			}
+
+			var filtered = string.IsNullOrEmpty( filter )
+				? availableTracks
+				: availableTracks.Where( x => x.Name.Contains( filter, StringComparison.OrdinalIgnoreCase ) );
+
+			menu.AddOptions( filtered,
+				getPath: x => Menu.GetSplitPath( $"{x.Display.Category}/{x.Display.Title}" ),
+				flat: !string.IsNullOrEmpty( filter ),
+				createOption: ( m, display, value ) =>
+				{
+					var option = new ToggleOption( display.Name, false, create =>
+					{
+						using var scope = session.History.Push( $"{(create ? "Create" : "Remove")} Track ({value.Name})" );
+
+						IProjectTrack? track = null;
+
+						if ( create )
+						{
+							track = value.Create();
+						}
+						else
+						{
+							View.Children
+								.FirstOrDefault( x => x.Track.Name == value.Name )?
+								.Remove();
+						}
+
+						session.TrackList.Update();
+						session.ClipModified();
+
+						if ( track is null || session.TrackList.Find( track ) is not { } trackView ) return;
+
+						trackView.ExpandAncestors();
+						trackView.IsSelected = true;
+
+						TrackList.Timeline.ScrollToTrack( trackView );
+					} );
+
+					updateActive += () => option.IsActive = View.Children.Any( x => x.Track.Name == value.Name );
+
+					m.AddWidget( option );
+				} );
+
+			updateActive?.Invoke();
+		}
+
+		filterLineEdit = menu.AddLineEdit( "Filter", autoFocus: true, onChange: UpdateOptions );
+
+		UpdateOptions( null );
+
+		menu.AboutToShow += () => updateActive?.Invoke();
+
+		if ( availableTracks.Any( x => session.GetTrack( View.Track, x.Name ) is null ) )
+		{
+			parent.AddOption( "Add All", "playlist_add", () =>
+			{
+				foreach ( var available in availableTracks )
+				{
+					session.GetOrCreateTrack( View.Track, available.Name );
+				}
+
+				session.TrackList.Update();
+				session.ClipModified();
+			} );
+		}
+
+		if ( View.Children.Count > 0 )
+		{
+			parent.AddOption( "Remove All", "playlist_remove", () =>
+			{
+				foreach ( var child in View.Children.ToArray() )
+				{
+					child.Track.Remove();
+				}
+
+				session.TrackList.Update();
+				session.ClipModified();
+			} );
+
+			parent.AddOption( "Remove Empty", "cleaning_services", RemoveEmptyChildren );
+		}
+
+		CreatePresetMenu( parent );
+
+		if ( View.Children.Count <= 0 ) return;
+
+		parent.AddSeparator();
+
+		var lockState = GetAggregateLockState( View.Children );
+
+		if ( lockState != true )
+		{
+			parent.AddOption( "Lock All", "lock", LockChildren );
+		}
+
+		if ( lockState != false )
+		{
+			parent.AddOption( "Unlock All", "lock_open", UnlockChildren );
+		}
+	}
+
+	private void CreatePresetMenu( Menu parent )
+	{
+		var session = TrackList.Session;
+
+		var matching = TrackPreset.BuiltInPresets
+			.Concat( session.Config.TrackPresets )
+			.Where( x => x.Root.Matches( View.Target ) )
+			.ToArray();
+
+		var canLoad = matching.Length > 0;
+		var canSave = View.Children.Any();
+
+		if ( !canLoad && !canSave ) return;
+
+		if ( canLoad )
+		{
+			var menu = parent.AddMenu( "Load Preset", "menu_open" );
+
+			PopulatePresetMenu( menu, matching, [View] );
+		}
+
+		if ( canSave )
+		{
+			var menu = parent.AddMenu( "Save Preset", "save" );
+
+			menu.AddLineEdit( "Title", autoFocus: true, onSubmit: title =>
+			{
+				if ( string.IsNullOrWhiteSpace( title ) ) return;
+
+				var preset = new TrackPreset( new TrackPresetMetadata( title ), TrackPresetNode.FromTrackView( View ) );
+
+				session.Config.TrackPresets.Add( preset );
+				session.SaveConfig();
+			} );
+		}
+	}
+
+	public static void PopulatePresetMenu( Menu menu, IReadOnlyList<TrackPreset> presets, IReadOnlyList<TrackView> rootViews )
+	{
+		if ( rootViews.Count == 0 ) return;
+
+		var session = rootViews[0].TrackList.Session;
+
+		Action? updateActive = null;
+
+		foreach ( var preset in presets )
+		{
+			var option = new ToggleOption( preset.Meta.Title, false, create =>
+			{
+				using var scope = session.History.Push( $"{(create ? "Create" : "Remove")} Preset Tracks ({preset.Meta.Title})" );
+
+				IProjectTrack[] createdTracks = [];
+
+				foreach ( var rootView in rootViews )
+				{
+					if ( create )
+					{
+						createdTracks = [..session.LoadPreset( rootView.Track, rootView.Target, preset.Root )];
+					}
+					else
+					{
+						session.RemovePreset( rootView.Track, rootView.Target, preset.Root );
+					}
+				}
+
+				session.TrackList.Update();
+				session.ClipModified();
+
+				session.TrackList.ExpandAncestors( createdTracks );
+				session.TrackList.SelectAll( createdTracks );
+
+				updateActive?.Invoke();
+			}, TrackPreset.BuiltInPresets.Contains( preset ) ? null : () =>
+			{
+				session.Config.TrackPresets.Remove( preset );
+				session.SaveConfig();
+			} );
+
+			option.ToolTip = preset.Meta.Description;
+
+			updateActive += () =>
+			{
+				var totalCount = rootViews.Max( x => preset.AvailableTrackCount( x.Track, session.Binder ) );
+				var matchingCount = rootViews.Min( x => preset.MatchingTrackCount( x.Track ) );
+
+				option.Title = $"{preset.Meta.Title} ({matchingCount} / {totalCount} Tracks)";
+				option.IsActive = rootViews.All( x => preset.AllTracksExist( x.Track, session.Binder ) );
+				option.Update();
+			};
+
+			menu.AddWidget( option );
+		}
+
+		menu.AboutToShow += () => updateActive?.Invoke();
+	}
+
+	private void OnRename( string name )
+	{
+		if ( View.Track is not ProjectSequenceTrack sequenceTrack ) return;
+
+		sequenceTrack.Name = name;
+
+		if ( _label is { } label ) label.Text = name;
+
+		// Track order might have changed
+
+		TrackList.Session.TrackList.Update();
+	}
+
+	private void Remove()
+	{
+		using var scope = TrackList.Session.History.Push( "Remove Track(s)" );
+		View.Remove();
+	}
+
+	private void MoveToRoot()
+	{
+		if ( View.Track is not IProjectTrackInternal track ) return;
+		if ( View.Parent?.Track is not IProjectTrackInternal parentTrack ) return;
+
+		parentTrack.RemoveChild( track );
+
+		TrackList.Session.TrackList.Update();
+	}
+
+	private void MoveToParent( IProjectReferenceTrack parentTrack )
+	{
+		if ( View.Track is not IProjectTrackInternal track ) return;
+		if ( parentTrack is not IProjectTrackInternal newParentTrack ) return;
+
+		if ( View.Parent?.Track is IProjectTrackInternal currentParentTrack )
+		{
+			if ( currentParentTrack == parentTrack ) return;
+
+			currentParentTrack.RemoveChild( track );
+		}
+
+		newParentTrack.AddChild( track );
+
+		TrackList.Session.TrackList.Update();
+	}
+
+	private void RemoveEmptyChildren()
+	{
+		foreach ( var child in View.Children.ToArray() )
+		{
+			RemoveEmptyCore( child );
+		}
+
+		TrackList.Session.TrackList.Update();
+	}
+
+	private static bool RemoveEmptyCore( TrackView view )
+	{
+		var allChildrenRemoved = true;
+
+		foreach ( var child in view.Children.ToArray() )
+		{
+			allChildrenRemoved &= RemoveEmptyCore( child );
+		}
+
+		if ( allChildrenRemoved && view.IsEmpty )
+		{
+			view.Remove();
+			return true;
+		}
+
+		return false;
+	}
+
+	private void LockChildren()
+	{
+		foreach ( var child in View.Children )
+		{
+			child.IsLockedSelf = true;
+		}
+	}
+
+	private void UnlockChildren()
+	{
+		foreach ( var child in View.Children )
+		{
+			child.IsLockedSelf = false;
+		}
+	}
+}
+
+// TODO: surely there's an easier way to stop Menus from closing
+file sealed class ToggleOption : Widget
+{
+	private readonly Label _label;
+	private readonly Action<bool> _toggled;
+
+	public new bool Enabled
+	{
+		get => base.Enabled;
+		set
+		{
+			_label.Color = value ? Theme.TextControl : Theme.TextControl.Darken( 0.5f );
+			_label.Update();
+
+			base.Enabled = value;
+		}
+	}
+
+	private bool _isActive;
+
+	public bool IsActive
+	{
+		get => _isActive;
+		set
+		{
+			_isActive = value;
+
+			_label.SetStyles( value ? "font-weight: bold;" : "font-weight: regular;" );
+			Update();
+		}
+	}
+
+	public string Title
+	{
+		get => _label.Text;
+		set => _label.Text = value;
+	}
+
+	protected override Vector2 SizeHint()
+	{
+		// So there's enough space for the label to become bold
+
+		return base.SizeHint() * new Vector2( 1.1f, 1f );
+	}
+
+	public ToggleOption( string title, bool active, Action<bool> toggled, Action? deleted = null )
+	{
+		Layout = Layout.Row();
+		Layout.Margin = new Margin( 45f, 5f, 16f, 5f );
+
+		_label = new Label( title, this );
+		_toggled = toggled;
+
+		MinimumWidth = 120f;
+
+		Layout.Add( _label );
+
+		IsActive = active;
+
+		if ( deleted is not null )
+		{
+			Layout.Margin = Layout.Margin with { Right = 8f };
+			Layout.Add( new IconButton( "delete", () =>
+			{
+				Dialog.AskConfirm( deleted, $"Are you sure you want to delete {title}?", "Delete Confirmation" );
+			} )
+			{
+				Foreground = Theme.Red,
+				ForegroundActive = Theme.Red
+			} );
+		}
+	}
+
+	protected override void OnPaint()
+	{
+		if ( Paint.HasMouseOver )
+		{
+			Paint.SetBrushAndPen( Theme.SurfaceBackground );
+			Paint.DrawRect( LocalRect.Shrink( IsActive ? 0f : 4f, 0f, 4f, 0f ), 3f );
+		}
+
+		if ( IsActive )
+		{
+			Paint.SetBrushAndPen( Theme.Primary );
+			Paint.DrawRect( LocalRect.Contain( new Vector2( 3f, LocalRect.Height ), TextFlag.LeftCenter ) );
+
+			Paint.SetPen( Theme.Text );
+			Paint.DrawIcon( LocalRect with { Left = LocalRect.Left + 16f }, "done", 13f, TextFlag.LeftCenter );
+		}
+	}
+
+	protected override void OnMouseReleased( MouseEvent e )
+	{
+		base.OnMouseReleased( e );
+
+		IsActive = !IsActive;
+
+		e.Accepted = true;
+
+		_toggled.Invoke( IsActive );
+		Update();
+	}
+}
+
+file sealed class LockButton : Button
+{
+	public TrackWidget TrackWidget { get; }
+
+	public LockButton( TrackWidget trackWidget )
+	{
+		TrackWidget = trackWidget;
+
+		FixedSize = 24f;
+
+		ToolTip = "Toggle lock";
+	}
+
+	protected override void OnPaint()
+	{
+		Paint.SetBrushAndPen( PaintExtensions.PaintSelectColor( Theme.ControlBackground,
+			Theme.ControlBackground.Darken( 0.5f ), Theme.Primary ) );
+		Paint.DrawRect( LocalRect, 4f );
+
+		Paint.SetPen( Theme.TextControl );
+		Paint.DrawIcon( LocalRect, TrackWidget.View.IsLockedSelf ? "lock" : "lock_open", 12f );
+	}
+
+	protected override void OnClicked()
+	{
+		using var scope = TrackWidget.TrackList.Session.History.Push( $"{(TrackWidget.View.IsLockedSelf ? "Unlocked" : "Locked")} Track" );
+		TrackWidget.View.IsLockedSelf = !TrackWidget.View.IsLockedSelf;
+	}
+}
+
+file sealed class CollapseButton : Button
+{
+	public TrackWidget Track { get; }
+
+	public CollapseButton( TrackWidget track )
+	{
+		Track = track;
+		FixedSize = 24f;
+
+		ToolTip = "Toggle expanded";
+	}
+
+	protected override void OnPaint()
+	{
+		Paint.SetBrushAndPen( PaintExtensions.PaintSelectColor( Theme.ControlBackground,
+			Theme.ControlBackground.Darken( 0.5f ), Theme.Primary ) );
+		Paint.DrawRect( LocalRect, 4f );
+
+		Paint.SetPen( Theme.TextControl );
+		Paint.DrawIcon( LocalRect, Track.View.IsExpanded ? "remove" : "add", 12f );
+	}
+
+	protected override void OnClicked()
+	{
+		Track.View.IsExpanded = !Track.View.IsExpanded;
+		Track.View.TrackList.Update();
+	}
+}
+
+file sealed class ReflectionHelper<T>
+	where T : class, IValid
+{
+	public static ControlWidget CreateControlWidget( IProjectReferenceTrack track, ITrackReference<T> target )
+	{
+		return ControlWidget.Create( EditorTypeLibrary.CreateProperty( target.Name,
+			() => target.Value, value =>
+			{
+				var metadata = track.Metadata ?? new TrackMetadata();
+
+				track.Metadata = metadata with
+				{
+					ReferenceId = value switch
+					{
+						Component cmp => cmp.Id,
+						GameObject go => go.Id,
+						_ => null
+					}
+				};
+
+				target.Bind( value );
+			} ) );
+	}
+}

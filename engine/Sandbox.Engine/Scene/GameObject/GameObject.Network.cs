@@ -1,0 +1,1009 @@
+﻿using Sandbox.Network;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+using System.Text.Json.Nodes;
+
+namespace Sandbox;
+
+public partial class GameObject
+{
+	internal NetworkObject _net { get; private set; }
+
+	/// <summary>
+	/// True if this is a networked object and is owned by another client. This means that we're
+	/// not controlling this object, so shouldn't try to move it or anything.
+	/// </summary>
+	public bool IsProxy => Network.IsProxy;
+
+	/// <summary>
+	/// If true then this object is the root of a networked object.
+	/// </summary>
+	public bool IsNetworkRoot => _net is not null;
+
+	/// <summary>
+	/// OBSOLETE: Use NetworkMode instead.
+	/// </summary>
+	[Obsolete( "Use GameObject.NetworkMode" )]
+	public bool Networked
+	{
+		get => NetworkMode == NetworkMode.Object;
+		set
+		{
+			NetworkMode = value ? NetworkMode.Object : NetworkMode.Snapshot;
+		}
+	}
+
+	/// <summary>
+	/// How should this object be networked to other clients? By default, a <see cref="GameObject"/> will be
+	/// networked as part of the <see cref="Scene"/> snapshot.
+	/// </summary>
+	public NetworkMode NetworkMode
+	{
+		get;
+		set
+		{
+			if ( _net is not null )
+			{
+				// The host can change the network mode of an existing networked object.
+				if ( Networking.IsHost && value != NetworkMode.Object )
+				{
+					field = value;
+					DetachFromNetwork();
+					return;
+				}
+
+				// We must always be `NetworkMode.Object` if we're a networked object.
+				field = NetworkMode.Object;
+				return;
+			}
+
+			field = value;
+		}
+	} = NetworkMode.Snapshot;
+
+	/// <summary>
+	/// A component that can control our network visibility to a specific <see cref="Connection"/>.
+	/// </summary>
+	internal Component.INetworkVisible NetworkVisibility;
+
+	/// <summary>
+	/// If this object is networked, who can control ownership of it? This property will only
+	/// be synchronized for a root network object.
+	/// </summary>
+	[Sync, Expose] private OwnerTransfer OwnerTransfer { get; set; } = OwnerTransfer.Fixed;
+
+	/// <summary>
+	/// Determines what happens when the owner disconnects. This property will only
+	/// be synchronized for a root network object.
+	/// </summary>
+	[Sync, Expose] private NetworkOrphaned NetworkOrphaned { get; set; } = NetworkOrphaned.Destroy;
+
+
+	/// <summary>
+	/// Network flags that describe the behavior of this <see cref="GameObject"/> as a <see cref="NetworkObject"/>.
+	/// </summary>
+	[Property, Sync( SyncFlags.FromHost ), Expose]
+	private NetworkFlags NetworkFlags { get; set; } = NetworkFlags.None;
+
+	/// <summary>
+	/// Determines whether updates for this networked object are always transmitted to clients. Otherwise,
+	/// they are only transmitted when the object is determined as visible to each client.
+	/// </summary>
+	[Property, Expose] private bool AlwaysTransmit { get; set; } = true;
+
+	/// <summary>
+	/// Whether our networked transform will be interpolated. This property will only
+	/// be synchronized for a root network object.
+	///
+	/// Obsolete: 09/12/2025
+	/// </summary>
+	[Obsolete( "Use Network.Interpolation or Network.Flags" )]
+	[Property, Expose] public bool NetworkInterpolation { get; set; } = true;
+
+	/// <summary>
+	/// Detach the network connection for this networked object. This will turn it into a regular
+	/// object for all clients, and it will no longer receive network updates.
+	/// </summary>
+	internal void DetachFromNetwork()
+	{
+		if ( _net is null )
+			return;
+
+		if ( Networking.IsHost )
+		{
+			_net.SendNetworkDetach();
+		}
+
+		ClearNetworking();
+		UpdateNetworkRoot();
+	}
+
+	/// <summary>
+	/// Spawn on the network. If you have permission to spawn entities, this will spawn on
+	/// everyone else's clients, and you will be the owner.
+	/// </summary>
+	public bool NetworkSpawn() => NetworkSpawn( Connection.Local );
+
+	/// <summary>
+	/// Spawn on the network with the specified options. If you have permission to spawn
+	/// entities, this will spawn on everyone else's clients.
+	/// </summary>
+	public bool NetworkSpawn( NetworkSpawnOptions options )
+	{
+		// We don't network spawn prefab scene files
+		if ( Scene is PrefabScene )
+			return false;
+
+		if ( Scene.IsEditor )
+			return false;
+
+		// Already is spawned
+		if ( _net is not null )
+			return false;
+
+		var connection = Connection.Local;
+
+		if ( !connection.CanSpawnObjects )
+		{
+			Log.Warning( $"{this} is trying to spawn - but we don't have permission!" );
+			return false;
+		}
+
+		// We may contain other networked children. In which case we want to send
+		// them all in a singular message to keep any references
+		using ( SceneNetworkSystem.Instance?.NetworkSpawnBatch() )
+		{
+			NetworkMode = NetworkMode.Object;
+
+			if ( options.OwnerTransfer.HasValue )
+				OwnerTransfer = options.OwnerTransfer.Value;
+
+			if ( options.OrphanedMode.HasValue )
+				NetworkOrphaned = options.OrphanedMode.Value;
+
+			if ( options.AlwaysTransmit.HasValue )
+				AlwaysTransmit = options.AlwaysTransmit.Value;
+
+			if ( options.Flags.HasValue )
+				NetworkFlags = options.Flags.Value;
+
+			// Give us a network object
+			_net = new NetworkObject( this );
+
+			// Tell all children that we're the network root
+			UpdateNetworkRoot();
+
+			// Give ownership to this connection
+			_net.InitializeForConnection( options.Owner, options.StartEnabled );
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// Spawn on the network. If you have permission to spawn entities, this will spawn on
+	/// everyone else's clients and the owner will be the connection provided.
+	/// </summary>
+	public bool NetworkSpawn( bool enabled, Connection owner )
+	{
+		var options = new NetworkSpawnOptions
+		{
+			StartEnabled = enabled,
+			Owner = owner
+		};
+
+		return NetworkSpawn( options );
+	}
+
+	/// <summary>
+	/// Spawn on the network. If you have permission to spawn entities, this will spawn on
+	/// everyone else's clients and the owner will be the connection provided.
+	/// </summary>
+	public bool NetworkSpawn( Connection owner ) => NetworkSpawn( true, owner );
+
+	/// <summary>
+	/// Initialize this object from the network
+	/// </summary>
+	internal void NetworkSpawnRemote( ObjectCreateMsg msg )
+	{
+		if ( _net is not null )
+		{
+			_net.OnCreateMessage( msg );
+			return;
+		}
+
+		_net = new NetworkObject( this );
+		_net.Initialize( msg );
+
+		NetworkMode = NetworkMode.Object;
+
+		UpdateNetworkRoot();
+	}
+
+	/// <summary>
+	/// Always transmit has been changed by the owner. We can't use Sync Vars for this, because
+	/// they don't get sent if they shouldn't be transmitted.
+	/// </summary>
+	[Rpc.Broadcast( NetFlags.OwnerOnly ), Expose]
+	void Msg_UpdateAlwaysTransmit( bool alwaysTransmit )
+	{
+		AlwaysTransmit = alwaysTransmit;
+		_net?.TransmitStateChanged();
+	}
+
+	internal bool IsNetworkCulled { get; set; }
+
+	void ClearNetworking()
+	{
+		if ( _net is null )
+			return;
+
+		_net.Dispose();
+		_net = null;
+	}
+
+	/// <summary>
+	/// Make a request from the host to stop being the network owner of this game object.
+	/// </summary>
+	[Rpc.Host]
+	void Msg_RequestDropOwnership( ushort snapshotVersion )
+	{
+		if ( _net is null ) return;
+		if ( OwnerTransfer != OwnerTransfer.Request ) return;
+
+		var caller = Rpc.Caller;
+
+		// Does the source connection even own this object?
+		if ( _net.Owner != caller.Id )
+			return;
+
+		// Can this caller drop ownership?
+		if ( _net.CanDropOwnership( caller ) )
+		{
+			Msg_DropOwnership( snapshotVersion );
+		}
+	}
+
+	/// <summary>
+	/// Stop being the network owner of this game object, or clear ownership if you're the host.
+	/// </summary>
+	[Rpc.Broadcast]
+	void Msg_DropOwnership( ushort snapshotVersion )
+	{
+		if ( _net is null ) return;
+
+		var caller = Rpc.Caller;
+
+		// Is it the host telling us to drop ownership of this object?
+		if ( caller.IsHost )
+		{
+			ApplyOwnership( snapshotVersion, Guid.Empty );
+			return;
+		}
+
+		if ( OwnerTransfer == OwnerTransfer.Request )
+			return;
+
+		// Does the source connection even own this object?
+		if ( _net.Owner != caller.Id )
+			return;
+
+		ApplyOwnership( snapshotVersion, Guid.Empty );
+	}
+
+	/// <summary>
+	/// Ownership changes propose a new (version, owner) and every peer keeps the greatest, the higher owner id
+	/// winning a tie. Changes that race each other arrive in a different order on each peer, but end the same everywhere.
+	/// </summary>
+	void ApplyOwnership( ushort snapshotVersion, Guid owner )
+	{
+		var version = (ushort)(snapshotVersion + 1);
+		var ahead = (short)(version - _net.LocalSnapshotState.Version);
+
+		if ( ahead < 0 )
+			return;
+
+		if ( ahead == 0 && owner.CompareTo( _net.Owner ) <= 0 )
+			return;
+
+		_net.LocalSnapshotState.Version = version;
+		_net.Owner = owner;
+	}
+
+	/// <summary>
+	/// Make a request from the host to become the network owner of this game object.
+	/// </summary>
+	[Rpc.Host]
+	void Msg_RequestTakeOwnership( ushort snapshotVersion )
+	{
+		if ( _net is null ) return;
+		if ( OwnerTransfer != OwnerTransfer.Request ) return;
+
+		// Can this caller take ownership?
+		if ( _net.CanTakeOwnership( Rpc.Caller ) )
+		{
+			Msg_AssignOwnership( Rpc.CallerId, snapshotVersion );
+		}
+	}
+
+	/// <summary>
+	/// Set the parent of this networked object.
+	/// </summary>
+	[Rpc.Broadcast]
+	void Msg_SetParent( Guid id, bool keepWorldPosition )
+	{
+		if ( _net is null ) return;
+
+		var caller = Rpc.Caller;
+		if ( caller == Connection.Local )
+			return;
+
+		// Can this caller set the parent?
+		if ( !caller.IsHost && !_net.HasControl( caller ) )
+			return;
+
+		var parentObject = Scene.Directory.FindByGuid( id );
+
+		if ( !parentObject.IsValid() )
+			parentObject = Scene;
+
+		if ( parentObject._net is not null )
+		{
+			// Does the caller own the parent object too?
+			if ( !caller.IsHost && !parentObject._net.HasControl( caller ) )
+				return;
+		}
+
+		SetParentFromNetwork( parentObject, keepWorldPosition );
+	}
+
+	/// <summary>
+	/// Become the network owner of this game object.
+	/// </summary>
+	[Rpc.Broadcast]
+	void Msg_TakeOwnership( ushort snapshotVersion )
+	{
+		if ( _net is null ) return;
+
+		var caller = Rpc.Caller;
+
+		// Can only the host control ownership?
+		if ( OwnerTransfer == OwnerTransfer.Fixed && !caller.IsHost )
+			return;
+
+		// Only the host can give ownership if we have to request it.
+		if ( OwnerTransfer == OwnerTransfer.Request && !caller.IsHost )
+			return;
+
+		ApplyOwnership( snapshotVersion, Rpc.CallerId );
+	}
+
+	/// <summary>
+	/// Make a request from the host to assign ownership of this game object to the specified connection <see cref="Guid"/>.
+	/// </summary>
+	[Rpc.Host]
+	void Msg_RequestAssignOwnership( Guid guid, ushort snapshotVersion )
+	{
+		if ( _net is null ) return;
+		if ( OwnerTransfer != OwnerTransfer.Request ) return;
+
+		// Can this caller assign ownership?
+		if ( _net.CanAssignOwnership( Rpc.Caller, guid ) )
+		{
+			Msg_AssignOwnership( guid, snapshotVersion );
+		}
+	}
+
+	/// <summary>
+	/// Assign ownership of this game object to the specified connection <see cref="Guid"/>.
+	/// </summary>
+	/// <param name="guid"></param>
+	/// <param name="snapshotVersion"></param>
+	[Rpc.Broadcast]
+	void Msg_AssignOwnership( Guid guid, ushort snapshotVersion )
+	{
+		if ( _net is null ) return;
+
+		var caller = Rpc.Caller;
+
+		// Can only the host control ownership?
+		if ( OwnerTransfer == OwnerTransfer.Fixed && !caller.IsHost )
+			return;
+
+		// Only the host can assign ownership if we have to request it.
+		if ( OwnerTransfer == OwnerTransfer.Request && !caller.IsHost )
+			return;
+
+		ApplyOwnership( snapshotVersion, guid );
+	}
+
+	[EditorBrowsable( EditorBrowsableState.Never )]
+	protected void __sync_SetValue<T>( in WrappedPropertySet<T> p )
+	{
+		var root = FindNetworkRoot();
+		var slot = NetworkObject.GetPropertySlot( p.MemberIdent, Id );
+
+		if ( root is null )
+		{
+			p.Setter( p.Value );
+			return;
+		}
+
+		var net = root._net;
+
+		if ( !net.dataTable.IsRegistered( slot ) )
+		{
+			p.Setter( p.Value );
+			return;
+		}
+
+		if ( !net.dataTable.HasControl( slot ) )
+		{
+			if ( NetworkTable.IsReadingChanges )
+				p.Setter( p.Value );
+
+			return;
+		}
+
+		net.dataTable.UpdateSlotHash( slot, p.Value );
+		p.Setter( p.Value );
+	}
+
+	[EditorBrowsable( EditorBrowsableState.Never )]
+	protected T __sync_GetValue<T>( WrappedPropertyGet<T> p )
+	{
+		// We might want to implement lerp or something later on
+		// so keeping this open in case.
+
+		return p.Value;
+	}
+
+	[EditorBrowsable( EditorBrowsableState.Never )]
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
+	protected void __rpc_Wrapper<T>( in WrappedMethod m, T[] argument )
+	{
+		Rpc.OnCallInstanceRpc( this, null, m, [argument] );
+	}
+
+	[EditorBrowsable( EditorBrowsableState.Never )]
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
+	protected void __rpc_Wrapper( in WrappedMethod m, params object[] argumentList )
+	{
+		Rpc.OnCallInstanceRpc( this, null, m, argumentList );
+	}
+
+	// Generated RPC wrappers bind to these before the object array overload, so arguments aren't boxed
+
+	[EditorBrowsable( EditorBrowsableState.Never )]
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
+	protected void __rpc_Wrapper( in WrappedMethod m ) => Rpc.OnCallInstanceRpc( this, null, m, new RpcArgs() );
+
+	[EditorBrowsable( EditorBrowsableState.Never )]
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
+	protected void __rpc_Wrapper<T1>( in WrappedMethod m, T1 a1 ) => Rpc.OnCallInstanceRpc( this, null, m, new RpcArgs<T1>( a1 ) );
+
+	[EditorBrowsable( EditorBrowsableState.Never )]
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
+	protected void __rpc_Wrapper<T1, T2>( in WrappedMethod m, T1 a1, T2 a2 ) => Rpc.OnCallInstanceRpc( this, null, m, new RpcArgs<T1, T2>( a1, a2 ) );
+
+	[EditorBrowsable( EditorBrowsableState.Never )]
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
+	protected void __rpc_Wrapper<T1, T2, T3>( in WrappedMethod m, T1 a1, T2 a2, T3 a3 ) => Rpc.OnCallInstanceRpc( this, null, m, new RpcArgs<T1, T2, T3>( a1, a2, a3 ) );
+
+	[EditorBrowsable( EditorBrowsableState.Never )]
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
+	protected void __rpc_Wrapper<T1, T2, T3, T4>( in WrappedMethod m, T1 a1, T2 a2, T3 a3, T4 a4 ) => Rpc.OnCallInstanceRpc( this, null, m, new RpcArgs<T1, T2, T3, T4>( a1, a2, a3, a4 ) );
+
+	[EditorBrowsable( EditorBrowsableState.Never )]
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
+	protected void __rpc_Wrapper<T1, T2, T3, T4, T5>( in WrappedMethod m, T1 a1, T2 a2, T3 a3, T4 a4, T5 a5 ) => Rpc.OnCallInstanceRpc( this, null, m, new RpcArgs<T1, T2, T3, T4, T5>( a1, a2, a3, a4, a5 ) );
+
+	[EditorBrowsable( EditorBrowsableState.Never )]
+	[MethodImpl( MethodImplOptions.AggressiveInlining )]
+	protected void __rpc_Wrapper<T1, T2, T3, T4, T5, T6>( in WrappedMethod m, T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6 ) => Rpc.OnCallInstanceRpc( this, null, m, new RpcArgs<T1, T2, T3, T4, T5, T6>( a1, a2, a3, a4, a5, a6 ) );
+
+	/// <summary>
+	/// The network root is the first networked GameObject above this.
+	/// This gets set from the parent's NetworkSpawn and invalidated when the parent changes.
+	/// </summary>
+	internal GameObject NetworkRoot { get; private set; }
+
+	internal void UpdateNetworkRoot()
+	{
+		NetworkRoot = FindNetworkRoot();
+		ForEachChild( "UpdateNetworkRoot", true, go => go.UpdateNetworkRoot() );
+	}
+
+	internal GameObject FindNetworkRoot()
+	{
+		if ( _net is not null ) return this;
+		if ( Parent is null || Parent is Scene ) return null;
+
+		return Parent.FindNetworkRoot();
+	}
+
+	private static readonly DeserializeOptions _networkRefreshDeserializeOptions = new() { IsRefreshing = true, IsNetworkRefresh = true, ClearAbsentFields = true };
+
+	/// <summary>
+	/// Update hierarchy from a network refresh.
+	/// </summary>
+	internal void NetworkRefresh( JsonObject jso )
+	{
+		Deserialize( jso, _networkRefreshDeserializeOptions );
+	}
+
+	/// <summary>
+	/// Loop all of our children, and any with networking enabled, we should spawn them
+	/// with the same creator + owner as this.
+	/// </summary>
+	internal void NetworkSpawnRecursive( Connection connection )
+	{
+		if ( Scene is PrefabScene )
+			return;
+
+		foreach ( var go in Children )
+		{
+			// not this child, maybe one of its children
+			if ( go.NetworkMode != NetworkMode.Object )
+			{
+				go.NetworkSpawnRecursive( connection );
+				continue;
+			}
+
+			go.NetworkSpawn( go.Enabled, connection );
+		}
+	}
+
+	NetworkAccessor __networkAccess;
+
+	/// <summary>
+	/// Access network information for this GameObject.
+	/// </summary>
+	[ActionGraphInclude, Icon( "wifi" )]
+	public NetworkAccessor Network
+	{
+		get
+		{
+			var root = NetworkRoot;
+
+			if ( root is not null && root != this )
+				return root.Network;
+
+			__networkAccess ??= new( this );
+			return __networkAccess;
+
+		}
+	}
+
+	public NetworkAccessor RootNetwork
+	{
+		get
+		{
+			var accessor = Network;
+
+			if ( IsRoot )
+				return accessor;
+
+			var parentAccessor = Parent?.RootNetwork;
+			return (parentAccessor?.Active ?? false) ? parentAccessor : accessor;
+		}
+	}
+
+	[Expose, ActionGraphIgnore]
+	public class NetworkAccessor
+	{
+		readonly GameObject go;
+
+		public NetworkAccessor( GameObject o )
+		{
+			go = o;
+		}
+
+		/// <summary>
+		/// Is this object networked?
+		/// </summary>
+		public bool Active => go._net is not null;
+
+		/// <summary>
+		/// Get the GameObject that is the root of this network object
+		/// </summary>
+		public GameObject RootGameObject => go;
+
+		/// <summary>
+		/// Are we the owner of this network object?
+		/// </summary>
+		[ActionGraphInclude]
+		public bool IsOwner => OwnerId == Connection.Local.Id;
+
+		/// <summary>
+		/// The Id of the owner of this object
+		/// </summary>
+		public Guid OwnerId => go._net?.Owner ?? Guid.Empty;
+
+		/// <summary>
+		/// Are we the creator of this network object
+		/// </summary>
+		[ActionGraphInclude]
+		public bool IsCreator => CreatorId == Connection.Local.Id;
+
+		/// <summary>
+		/// The Id of the creator of this object
+		/// </summary>
+		public Guid CreatorId => go._net?.Creator ?? Guid.Empty;
+
+		/// <summary>
+		/// Is this object a network proxy? A network proxy is a network object that is not being simulated on the local pc.
+		/// This means it's either owned by no-one and is being simulated by the host or owned by another client.
+		/// </summary>
+		[ActionGraphInclude]
+		public bool IsProxy => go._net?.IsProxy ?? false;
+
+		/// <summary>
+		/// Try to get the connection that owns this object. This can and will return null
+		/// if we don't have information for this connection.
+		/// </summary>
+		[ActionGraphInclude, Obsolete( "Moved to Owner" )]
+		public Connection OwnerConnection => Owner;
+
+		/// <summary>
+		/// Try to get the connection that owns this object. This can and will return null
+		/// if we don't have information for this connection.
+		/// </summary>
+		[ActionGraphInclude]
+		public Connection Owner => Connection.Find( OwnerId );
+
+		/// <summary>
+		/// Who can control ownership of this networked object?
+		/// </summary>
+		public OwnerTransfer OwnerTransfer => go.OwnerTransfer;
+
+		/// <summary>
+		/// Determines what happens when the owner disconnects.
+		/// </summary>
+		public NetworkOrphaned NetworkOrphaned => go.NetworkOrphaned;
+
+		/// <summary>
+		/// Current snapshot version. This usually changes when the owner changes.
+		/// </summary>
+		internal ushort SnapshotVersion => go._net?.SnapshotVersion ?? 0;
+
+		/// <summary>
+		/// Network flags which describe the behavior of this networked object.
+		/// <b>Can only be changed by the host after the networked object has been spawned.</b>
+		/// </summary>
+		public NetworkFlags Flags
+		{
+			get => go.NetworkFlags;
+			set => go.NetworkFlags = value;
+		}
+
+		/// <summary>
+		/// Determines whether updates for this networked object are always transmitted to clients. Otherwise,
+		/// they are only transmitted when the object is determined as visible to each client.
+		/// </summary>
+		public bool AlwaysTransmit
+		{
+			get => go.AlwaysTransmit;
+			set
+			{
+				if ( IsProxy )
+					return;
+
+				if ( go.AlwaysTransmit == value )
+					return;
+
+				go.Msg_UpdateAlwaysTransmit( value );
+			}
+		}
+
+		/// <summary>
+		/// Whether the networked object's transform is interpolated.
+		/// </summary>
+		public bool Interpolation
+		{
+			get => (Flags & NetworkFlags.NoInterpolation) == 0;
+			set
+			{
+				if ( IsProxy && !Networking.IsHost )
+					return;
+
+				if ( Interpolation == value )
+					return;
+
+				if ( value )
+					Flags &= ~NetworkFlags.NoInterpolation;
+				else
+					Flags |= NetworkFlags.NoInterpolation;
+			}
+		}
+
+		/// <summary>
+		/// Enable interpolation for the networked object's transform.
+		/// Obsolete: 09/12/2025
+		/// </summary>
+		[Obsolete( "Use Interpolation Property" )]
+		public bool EnableInterpolation()
+		{
+			if ( IsProxy && !Networking.IsHost )
+				return false;
+
+			Interpolation = true;
+			return true;
+		}
+
+		/// <summary>
+		/// Disable interpolation for the networked object's transform.
+		/// Obsolete: 09/12/2025
+		/// </summary>
+		[Obsolete( "Use Interpolation Property" )]
+		public bool DisableInterpolation()
+		{
+			if ( IsProxy && !Networking.IsHost )
+				return false;
+
+			Interpolation = false;
+			return true;
+		}
+
+		/// <summary>
+		/// <inheritdoc cref="GameTransform.ClearInterpolation()"/>
+		/// </summary>
+		public bool ClearInterpolation()
+		{
+			go.Transform.ClearInterpolation();
+			return true;
+		}
+
+		/// <summary>
+		/// Set what happens to this networked object when the owner disconnects.
+		/// </summary>
+		public bool SetOrphanedMode( NetworkOrphaned action )
+		{
+			if ( IsProxy ) return false;
+			go.NetworkOrphaned = action;
+			return true;
+		}
+
+		/// <summary>
+		/// Set who can control ownership of this networked object. Only the current owner can change this.
+		/// </summary>
+		public bool SetOwnerTransfer( OwnerTransfer option )
+		{
+			if ( IsProxy ) return false;
+			go.OwnerTransfer = option;
+			return true;
+		}
+
+		/// <summary>
+		/// Send a complete refresh snapshot of this networked object to other clients. This is useful if you have
+		/// made vast changes to components or children.
+		/// </summary>
+		public void Refresh()
+		{
+			if ( !Active || (IsProxy && !Networking.IsHost) )
+				return;
+
+			var connection = Connection.Local;
+			if ( !connection.CanRefreshObjects )
+			{
+				Log.Warning( $"{go} is trying to refresh - but we don't have permission!" );
+				return;
+			}
+
+			go._net?.RegisterPropertiesRecursive();
+			go._net?.SendNetworkRefresh();
+		}
+
+		/// <summary>
+		/// Send a refresh for a specific <see cref="GameObject"/> in the hierarchy of this networked object to other clients.
+		/// This is useful if you've destroyed or added a new <see cref="GameObject"/> descendent and don't want to refresh
+		/// the entire networked object.
+		/// </summary>
+		public void Refresh( GameObject descendent )
+		{
+			if ( !Active || (IsProxy && !Networking.IsHost) )
+				return;
+
+			var connection = Connection.Local;
+			if ( !connection.CanRefreshObjects )
+			{
+				Log.Warning( $"{go} is trying to refresh - but we don't have permission!" );
+				return;
+			}
+
+			go._net?.RegisterPropertiesRecursive();
+			go._net?.SendNetworkRefresh( descendent );
+		}
+
+		/// <summary>
+		/// Send a refresh for a specific <see cref="Component"/> in the hierarchy of this networked object to other clients.
+		/// This is useful if you've destroyed or added a new <see cref="Component"/> and don't want to refresh the entire object.
+		/// </summary>
+		public void Refresh( Component component )
+		{
+			if ( !Active || (IsProxy && !Networking.IsHost) )
+				return;
+
+			var connection = Connection.Local;
+			if ( !connection.CanRefreshObjects )
+			{
+				Log.Warning( $"{go} is trying to refresh - but we don't have permission!" );
+				return;
+			}
+
+			go._net?.RegisterPropertiesRecursive();
+			go._net?.SendNetworkRefresh( component );
+		}
+
+		/// <summary>
+		/// Become the network owner of this object.
+		/// <br/>
+		/// <br/>
+		/// Note: whether you can take ownership of this object depends on the
+		/// <see cref="OwnerTransfer"/> of this networked object.
+		/// </summary>
+		[ActionGraphInclude]
+		public bool TakeOwnership()
+		{
+			if ( !Active ) return false;
+			if ( IsOwner ) return false;
+
+			var snapshotVersion = go.Network.SnapshotVersion;
+
+			if ( !Networking.IsHost && go.OwnerTransfer == OwnerTransfer.Request )
+			{
+				go.Msg_RequestTakeOwnership( snapshotVersion );
+				return true;
+			}
+
+			go.Msg_TakeOwnership( snapshotVersion );
+			return true;
+		}
+
+		/// <summary>
+		/// Set the owner of this object to the specified <see cref="Connection"/>.
+		/// <br/>
+		/// <br/>
+		/// Note: whether you can assign ownership of this object depends on the
+		/// <see cref="OwnerTransfer"/> of this networked object.
+		/// </summary>
+		/// <exception cref="ArgumentNullException"><paramref name="channel"/> cannot be null. To clear owner, use <see cref="DropOwnership"/> instead.</exception>
+		[ActionGraphInclude]
+		public bool AssignOwnership( Connection channel )
+		{
+			ArgumentNullException.ThrowIfNull( channel );
+
+			if ( !Active ) return false;
+
+			var snapshotVersion = go.Network.SnapshotVersion;
+
+			if ( !IsProxy )
+			{
+				UpdateStateBeforeOwnerChange();
+			}
+
+			if ( !Networking.IsHost && go.OwnerTransfer == OwnerTransfer.Request )
+			{
+				go.Msg_RequestAssignOwnership( channel.Id, snapshotVersion );
+				return true;
+			}
+
+			go.Msg_AssignOwnership( channel.Id, snapshotVersion );
+			return true;
+		}
+
+		/// <summary>
+		/// Assign ownership to the specific connection id. This should only be used internally
+		/// when we want to force an ownership change, such as for a <see cref="NetworkOrphaned"/> action.
+		/// </summary>
+		/// <param name="connectionId"></param>
+		/// <returns></returns>
+		internal bool AssignOwnership( Guid connectionId )
+		{
+			if ( !Active ) return false;
+
+			if ( !IsProxy )
+			{
+				UpdateStateBeforeOwnerChange();
+			}
+
+			go.Msg_AssignOwnership( connectionId, go.Network.SnapshotVersion );
+			return true;
+		}
+
+		/// <summary>
+		/// Change the cull state of this GameObject on the network for the specified <see cref="Connection"/>.
+		/// This is for internal use only.
+		/// </summary>
+		internal void SetCullState( Connection target, bool isCulled )
+		{
+			if ( IsProxy )
+				return;
+
+			using var bs = ByteStream.Create( 32 );
+
+			bs.Write( InternalMessageType.SetCullState );
+			bs.Write( RootGameObject.Id );
+			bs.Write( isCulled );
+
+			target.SendStream( bs );
+		}
+
+		/// <summary>
+		/// Stop being the owner of this object. Will clear the owner so the object becomes
+		/// controlled by the server, and owned by no-one.
+		/// <br/>
+		/// <br/>
+		/// Note: whether you can drop ownership of this object depends on the
+		/// <see cref="OwnerTransfer"/> of this networked object.
+		/// </summary>
+		[ActionGraphInclude]
+		public bool DropOwnership()
+		{
+			if ( !Active ) return false;
+
+			var snapshotVersion = go.Network.SnapshotVersion;
+
+			if ( !IsProxy )
+			{
+				UpdateStateBeforeOwnerChange();
+			}
+
+			if ( Networking.IsHost )
+			{
+				// The host can always drop ownership of a networked object.
+				go.Msg_DropOwnership( snapshotVersion );
+				return true;
+			}
+
+			if ( !IsOwner ) return false;
+
+			if ( go.OwnerTransfer == OwnerTransfer.Request )
+			{
+				go.Msg_RequestDropOwnership( snapshotVersion );
+				return true;
+			}
+
+			go.Msg_DropOwnership( snapshotVersion );
+			return true;
+		}
+
+		/// <summary>
+		/// <inheritdoc cref="GameObject.NetworkSpawn()"/>
+		/// </summary>
+		[Obsolete( "Use GameObject.NetworkSpawn" )]
+		public bool Spawn()
+		{
+			return go.NetworkSpawn();
+		}
+
+		/// <summary>
+		/// <inheritdoc cref="GameObject.NetworkSpawn( Connection )"/>
+		/// </summary>
+		[Obsolete( "Use GameObject.NetworkSpawn" )]
+		public bool Spawn( Connection owner )
+		{
+			return go.NetworkSpawn( owner );
+		}
+
+		/// <summary>
+		/// Before we drop ownership (or assign ownership to somebody else), there are a few things
+		/// we want to do first. We want to let any listeners know so that they can react to it, we
+		/// want to clear interpolation, and finally, we want to force a full delta snapshot of the
+		/// object's state.
+		/// </summary>
+		private void UpdateStateBeforeOwnerChange()
+		{
+			// Let any listeners know that we're about to drop ownership and send
+			// a full state update to everyone
+			IGameObjectNetworkEvents.PostToGameObject( go, x => x.BeforeDropOwnership() );
+
+			// Clear interpolation and set that flag here
+			go.Transform.ClearInterpolation();
+
+			// Force a delta snapshot for this object since we changed the owner
+			var system = SceneNetworkSystem.Instance;
+			system?.DeltaSnapshots?.SendFull( go._net );
+		}
+	}
+}

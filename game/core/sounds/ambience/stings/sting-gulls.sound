@@ -1,0 +1,20 @@
+{
+	"UI": false,
+	"Volume": 1,
+	"VolumeRandom": 0,
+	"Pitch": 1,
+	"PitchRandom": 0,
+	"Decibels": 90,
+	"Sounds":
+	[
+		"sounds/ambience/stings/sting-gulls-1.vsnd",
+		"sounds/ambience/stings/sting-gulls-2.vsnd",
+		"sounds/ambience/stings/sting-gulls-3.vsnd",
+		"sounds/ambience/stings/sting-gulls-4.vsnd",
+		"sounds/ambience/stings/sting-gulls-5.vsnd",
+		"sounds/ambience/stings/sting-gulls-6.vsnd"
+	],
+	"SelectionMode": "Random",
+	"MaximumDistance": 1870.094200,
+	"MinimumDistance": 93.504715
+}

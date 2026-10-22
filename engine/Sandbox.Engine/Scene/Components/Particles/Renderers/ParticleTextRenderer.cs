@@ -1,0 +1,161 @@
+using Sandbox.Rendering;
+using Sandbox.UI;
+using static Sandbox.IBatchedParticleSpriteRenderer;
+
+namespace Sandbox;
+
+/// <summary>
+/// Renders particles as 2D sprites
+/// </summary>
+[Expose]
+[Title( "Particle Text Renderer" )]
+[Category( "Effects" )]
+[Icon( "text_fields" )]
+public sealed class ParticleTextRenderer : ParticleRenderer, Component.ExecuteInEditor, IBatchedParticleSpriteRenderer
+{
+
+	[Group( "Text" ), Order( 0 )]
+	[Property] public TextRendering.Scope Text { get; set; } = TextRendering.Scope.Default;
+
+	[Group( "Sprite" )]
+	[Property, Range( 0, 1 )] public Vector2 Pivot { get; set; } = 0.5f;
+
+	[Group( "Sprite" )]
+	[Property, Range( 0, 2 )] public float Scale { get; set; } = 1.0f;
+
+	[Group( "Rendering" ), Order( 1 )]
+	[Property, Range( 0, 50 )] public float DepthFeather { get; set; } = 0.0f;
+
+	/// <summary>
+	/// Sprites closer to the camera than this are completely invisible.
+	/// </summary>
+	[Group( "Rendering" ), Order( 1 )]
+	[Property, Range( 0, 64 )] public float CameraFadeNear { get; set; } = 0.0f;
+
+	/// <summary>
+	/// Sprites further from the camera than this are fully opaque. Between this and
+	/// <see cref="CameraFadeNear"/> they fade out. Leave at zero to disable the fade.
+	/// </summary>
+	[Group( "Rendering" ), Order( 1 )]
+	[Property, Range( 0, 256 )] public float CameraFadeFar { get; set; } = 0.0f;
+
+	[Group( "Rendering" )]
+	[Property, Range( 0, 1 )] public float FogStrength { get; set; } = 1.0f;
+
+	[Group( "Rendering" )]
+	[Property] public bool Additive { get; set; }
+
+	[Group( "Rendering" )]
+	[Property] public bool Shadows { get; set; }
+
+	[Group( "Rendering" )]
+	[Property] public bool Lighting { get; set; }
+
+	/// <summary>
+	/// Indicates whether the sprite is opaque, optimizing rendering by skipping sorting.
+	/// </summary>
+	[Group( "Rendering" )]
+	[Property] public bool Opaque { get; set; }
+
+	[Group( "Rendering" )]
+	[Property] public FilterMode TextureFilter { get; set; } = FilterMode.Bilinear;
+
+	/// <summary>
+	/// Aligns the sprite to face its velocity direction.
+	/// </summary>
+	[Property, ToggleGroup( "FaceVelocity" ), Order( 2 )]
+	public bool FaceVelocity { get; set; }
+
+	/// <summary>
+	/// Offset applied to the rotation when facing velocity.
+	/// </summary>
+	[Property, ToggleGroup( "FaceVelocity" )]
+	[Range( 0, 360 )] public float RotationOffset { get; set; }
+
+	/// <summary>
+	/// Enables motion blur effects for the sprite.
+	/// </summary>
+	[Property, ToggleGroup( "MotionBlur" ), Order( 3 )]
+	public bool MotionBlur { get; set; }
+
+	/// <summary>
+	/// Determines whether the motion blur effect includes a leading trail.
+	/// </summary>
+	[Property, ToggleGroup( "MotionBlur" )]
+	[InfoBox( "Creates a blur of sprites along the velocity of the particle, giving the impression of motion blur" )]
+	public bool LeadingTrail { get; set; } = true;
+
+	/// <summary>
+	/// Amount of blur applied to the sprite during motion blur.
+	/// </summary>
+	[Property, ToggleGroup( "MotionBlur" ), Range( 0, 1 )]
+	public float BlurAmount { get; set; } = 0.5f;
+
+	/// <summary>
+	/// Spacing between blur samples in the motion blur effect.
+	/// </summary>
+	[Property, ToggleGroup( "MotionBlur" ), Range( 0, 1 )]
+	public float BlurSpacing { get; set; } = 0.5f;
+
+	/// <summary>
+	/// Opacity of the blur effect applied to the sprite.
+	/// </summary>
+	[Property, ToggleGroup( "MotionBlur" ), Range( 0, 1 )]
+	public float BlurOpacity { get; set; } = 0.5f;
+
+	/// <summary>
+	/// Alignment mode for the sprite's billboard behavior.
+	/// </summary>
+	[Property]
+	[Group( "Sprite" )]
+	public ParticleSpriteRenderer.BillboardAlignment Alignment { get; set; } = ParticleSpriteRenderer.BillboardAlignment.LookAtCamera;
+
+	public enum ParticleSortMode
+	{
+		Unsorted,
+		ByDistance
+	}
+
+	/// <summary>
+	/// Sorting mode used for rendering particles.
+	/// </summary>
+	[Group( "Sprite" )]
+	[Property] public ParticleSortMode SortMode { get; set; }
+
+	/// <summary>
+	/// Interface property to determine if particles should be sorted
+	/// </summary>
+	public bool IsSorted => SortMode != ParticleSortMode.Unsorted;
+
+	/// <summary>
+	/// Text particles draw from the glyph outlines on the GPU, so there is no atlas texture any more.
+	/// </summary>
+	[Obsolete( "Text particles render from glyph outlines - there is no render texture. Use TextRendering.GetOrCreateTexture if you want a rasterized copy of the text." )]
+	public Texture RenderTexture => null;
+
+	ParticleType IBatchedParticleSpriteRenderer.Type => ParticleType.Text;
+	GpuFontText.Placement IBatchedParticleSpriteRenderer.TextSprite => _textSprite;
+	GpuFontText.Placement _textSprite;
+
+	/// <summary>
+	/// Lay the text out and put its glyph instances in this frame's buffers, so every particle draws it straight
+	/// from the outlines. Once a frame, before the particles are processed.
+	/// </summary>
+	internal void PrepareText()
+	{
+		_textSprite = default;
+
+		var block = TextRendering.GetOrCreateTextBlock( Text, TextFlag.LeftTop, 4096 );
+		if ( block is null || block.IsEmpty ) return;
+
+		_textSprite = block.Upload();
+	}
+
+	protected override void OnAwake()
+	{
+		Tags.Add( "particles" );
+
+		base.OnAwake();
+	}
+
+}

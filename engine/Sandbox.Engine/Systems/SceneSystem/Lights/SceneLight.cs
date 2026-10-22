@@ -1,0 +1,333 @@
+using NativeEngine;
+
+namespace Sandbox;
+
+/// <summary>
+/// Base class for light scene objects for use with a <see cref="SceneWorld"/>.
+/// </summary>
+[Expose]
+public class SceneLight : SceneObject
+{
+	internal CSceneLightObject lightNative;
+
+	/// <summary>
+	/// Changes when the light moves or its range changes, invalidating cached spatial queries.
+	/// </summary>
+	internal int BoundsVersion { get; private set; }
+
+	/// <summary>
+	/// Updates the scene-owned modulation candidates and the managed renderer's light mirror.
+	/// </summary>
+	internal void SetModulatorRange( uint offset, uint count )
+	{
+		lightNative.SetLightModulatorRange( offset, count );
+		NotifyChanged( Rendering.SceneObjectChange.Settings );
+	}
+
+	internal SceneLight() { }
+	internal SceneLight( HandleCreationData _ ) { }
+
+	/// <summary>
+	/// Color and brightness of the light
+	/// </summary>
+	public Color LightColor
+	{
+		get { return lightNative.GetColor(); }
+		set { lightNative.SetColor( value ); NotifyChanged( Rendering.SceneObjectChange.Settings ); }
+	}
+
+	/// <summary>
+	/// Radius of the light in units
+	/// </summary>
+	public float Radius
+	{
+		get { return lightNative.GetRadius(); }
+		set
+		{
+			if ( Radius == value ) return;
+			lightNative.SetRadius( value ); NotifyChanged( Rendering.SceneObjectChange.Settings );
+			BoundsVersion++;
+		}
+	}
+
+	/// <summary>
+	/// The light attenuation constant term
+	/// </summary>
+	public float ConstantAttenuation
+	{
+		get { return lightNative.GetConstantAttn(); }
+		set { lightNative.SetConstantAttn( value ); NotifyChanged( Rendering.SceneObjectChange.Settings ); }
+	}
+
+	/// <summary>
+	/// The light attenuation linear term
+	/// </summary>
+	public float LinearAttenuation
+	{
+		get { return lightNative.GetLinearAttn(); }
+		set { lightNative.SetLinearAttn( value ); NotifyChanged( Rendering.SceneObjectChange.Settings ); }
+	}
+
+	/// <summary>
+	/// The light attenuation quadratic term
+	/// </summary>
+	public float QuadraticAttenuation
+	{
+		// Note: to make these numbers sane I'm doing some calculation here
+		get { return lightNative.GetQuadraticAttn() * 10000.0f; }
+		set { lightNative.SetQuadraticAttn( value / 10000.0f ); NotifyChanged( Rendering.SceneObjectChange.Settings ); }
+	}
+
+	/// <summary>
+	/// Makes this a baked light addressed by probe/lightmap index textures (0-254).
+	/// Pass -1 to restore dynamic lighting. Index 255 is reserved for an empty texture channel.
+	/// </summary>
+	public void SetBakedLightIndex( int index, bool mixedShadows = false )
+	{
+		if ( index is < -1 or > 254 )
+			throw new ArgumentOutOfRangeException( nameof( index ) );
+		lightNative.SetBakeLightIndex( index );
+		lightNative.SetBakeLightIndexScale( 1.0f );
+		lightNative.SetUsesIndexedBakedLighting( index >= 0 );
+		var flags = lightNative.GetLightFlags();
+		flags &= ~(16u | 32u);
+		if ( index >= 0 ) flags |= 32u | (mixedShadows ? 16u : 0u);
+		lightNative.SetLightFlags( flags );
+		NotifyChanged( Rendering.SceneObjectChange.Settings );
+	}
+
+	/// <summary>
+	/// Get or set the resolution of the shadow map. If this is zero the engine will decide what it should use.
+	/// </summary>
+	public int ShadowTextureResolution
+	{
+		get { return lightNative.GetShadowTextureResolution(); }
+		set { lightNative.SetShadowTextureResolution( value ); NotifyChanged( Rendering.SceneObjectChange.Settings ); }
+	}
+
+	/// <summary>
+	/// Enable or disable shadow rendering
+	/// </summary>
+	public bool ShadowsEnabled
+	{
+		get { return lightNative.GetShadows(); }
+		set { lightNative.SetShadows( value ); NotifyChanged( Rendering.SceneObjectChange.Settings ); }
+	}
+
+	private Texture _lightCookie;
+
+	/// <summary>
+	/// Access the LightCookie - which is a texture that gets drawn over the light
+	/// </summary>
+	public Texture LightCookie
+	{
+		get => _lightCookie ??= Texture.FromNative( lightNative.GetLightCookie() );
+		set
+		{
+			_lightCookie = value;
+			lightNative.SetLightCookie( value == null ? default : value.native ); NotifyChanged( Rendering.SceneObjectChange.Settings );
+		}
+	}
+
+	/// <summary>
+	/// Should this light contribute diffuse lighting?
+	/// </summary>
+	public bool RenderDiffuse
+	{
+		get => _renderDiffuse;
+		set
+		{
+			_renderDiffuse = value;
+			lightNative.SetRenderDiffuse( value ); NotifyChanged( Rendering.SceneObjectChange.Settings );
+		}
+	}
+	private bool _renderDiffuse = true;
+
+	/// <summary>
+	/// Should this light contribute specular highlights?
+	/// </summary>
+	public bool RenderSpecular
+	{
+		get => _renderSpecular;
+		set
+		{
+			_renderSpecular = value;
+			lightNative.SetRenderSpecular( value ); NotifyChanged( Rendering.SceneObjectChange.Settings );
+		}
+	}
+	private bool _renderSpecular = true;
+
+	/// <summary>
+	/// Should this light contribute transmissive lighting (light passing through surfaces)?
+	/// </summary>
+	public bool RenderTransmissive
+	{
+		get => _renderTransmissive;
+		set
+		{
+			_renderTransmissive = value;
+			lightNative.SetRenderTransmissive( value ); NotifyChanged( Rendering.SceneObjectChange.Settings );
+		}
+	}
+	private bool _renderTransmissive = true;
+
+	public enum FogLightingMode
+	{
+		None,
+		Baked,
+		Dynamic,
+		DynamicNoShadows
+	}
+
+	public enum LightShape
+	{
+		Sphere,
+		Capsule,
+		Rectangle
+	}
+
+	public LightShape Shape
+	{
+		get => (LightShape)lightNative.GetLightShape();
+		set { lightNative.SetLightShape( (LightSourceShape_t)value ); NotifyChanged( Rendering.SceneObjectChange.Settings ); }
+	}
+
+	public Vector2 ShapeSize
+	{
+		set
+		{
+			lightNative.SetLightSourceDim0( value.x ); NotifyChanged( Rendering.SceneObjectChange.Settings );
+			lightNative.SetLightSourceDim1( value.y ); NotifyChanged( Rendering.SceneObjectChange.Settings );
+		}
+	}
+
+	public FogLightingMode FogLighting
+	{
+		get => (FogLightingMode)lightNative.GetFogLightingMode();
+		set { lightNative.SetFogLightingMode( (int)value ); NotifyChanged( Rendering.SceneObjectChange.Settings ); }
+	}
+
+	public float FogStrength
+	{
+		get => lightNative.GetFogContributionStength();
+		set { lightNative.SetFogContributionStength( value ); NotifyChanged( Rendering.SceneObjectChange.Settings ); }
+	}
+
+	/// <summary>
+	/// Stupid fucking shit
+	/// </summary>
+	internal Vector3 WorldDirection => lightNative.GetWorldDirection();
+
+	public float ShadowBias
+	{
+		get;
+		set { field = value; NotifyChanged( Rendering.SceneObjectChange.Settings ); }
+	}
+
+	public float ShadowHardness
+	{
+		get;
+		set { field = value; NotifyChanged( Rendering.SceneObjectChange.Settings ); }
+	}
+
+	/// <summary>
+	/// Should this light generate screen-space contact shadows on top of its shadow maps?
+	/// </summary>
+	internal bool ContactShadows
+	{
+		get;
+		set { field = value; NotifyChanged( Rendering.SceneObjectChange.Settings ); }
+	}
+
+	/// <summary>
+	/// Get or create screen-space shadow mask for this light and view, valid for the current frame only.
+	/// </summary>
+	internal Texture GetShadowMask( ISceneView view )
+	{
+		// Only managed cameras reach OnRenderStage, so only they ever clear/dispatch into the mask.
+		// Purely native views (cubemap bakes, capture views) must get no mask, or the CSM pass
+		// samples uninitialized contents instead of "fully lit".
+		var cameraId = view.m_ManagedCameraId;
+		if ( cameraId == 0 )
+			return null;
+
+		// Our SSS assumes a perspective light coordinate, so orthographic views get no mask.
+		if ( view.GetFrustum().IsOrthographic() )
+			return null;
+
+		var vp = view.GetMainViewport();
+
+		int width = (int)vp.Rect.Width;
+		int height = (int)vp.Rect.Height;
+
+		if ( width < 1 || height < 1 )
+			return null;
+
+		// the loan is released immediately - the stable name means both same-frame calls
+		// (CSM setup + the mask pass) resolve to the same cached RT and bindless index. Hold the
+		// loan for the frame if anything else ever starts requesting same-size temporaries by name.
+		using var rt = RenderTarget.GetTemporary( width, height, ImageFormat.A8, ImageFormat.None,
+			MultisampleAmount.MultisampleNone, 1, $"ShadowMask_{(nint)lightNative}_{cameraId}" );
+		return rt.ColorTarget;
+	}
+
+	internal override void OnTransformChanged( in Transform tx )
+	{
+		base.OnTransformChanged( tx );
+
+		lightNative.SetWorldDirection( tx.Rotation );
+		lightNative.SetWorldPosition( tx.Position );
+		BoundsVersion++;
+	}
+
+	[Obsolete( "Use ScenePointLight (or stop fucking using SceneObjects at all)" )]
+	public SceneLight( SceneWorld sceneWorld, Vector3 position, float radius, Color color )
+	{
+		Assert.IsValid( sceneWorld );
+
+		using ( var h = IHandle.MakeNextHandle( this ) )
+		{
+			CSceneSystem.CreatePointLight( sceneWorld );
+		}
+
+		Position = position;
+		Radius = radius;
+		LightColor = color;
+		QuadraticAttenuation = 1.0f;
+	}
+
+	[Obsolete( "Use ScenePointLight (or stop fucking using SceneObjects at all)" )]
+	public SceneLight( SceneWorld sceneWorld ) : this( sceneWorld, Vector3.Zero, 100, Color.White * 10.0f )
+	{
+
+	}
+
+	internal override void OnNativeInit( CSceneObject ptr )
+	{
+		base.OnNativeInit( ptr );
+
+		lightNative = (CSceneLightObject)ptr;
+
+		lock ( World.InternalSceneObjects )
+		{
+			World.InternalSceneLights.Add( this );
+		}
+	}
+
+	internal override void OnNativeDestroy()
+	{
+		lock ( World.InternalSceneObjects )
+		{
+			World.InternalSceneLights.Remove( this );
+		}
+
+		// Return any cached shadow map to the pool before this object becomes
+		// eligible for GC. Without this the ConditionalWeakTable silently drops
+		// the entry on collection and the shadow texture is orphaned.
+		Rendering.ShadowMapper.OnLightRemoved( this );
+
+		lightNative = IntPtr.Zero;
+
+		base.OnNativeDestroy();
+	}
+}

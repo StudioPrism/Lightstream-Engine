@@ -1,0 +1,24 @@
+﻿@namespace TestComponents
+@using System.Diagnostics;
+@using Sandbox.UI;
+
+@if (ShowFirstItem)
+{
+    <one @ref=One></one>
+}
+
+@if (ShowMiddleItem)
+{
+    <two></two>
+}
+
+<three @ref=Three></three>
+
+@code 
+{
+    public bool ShowFirstItem { get; set; }
+    public bool ShowMiddleItem { get; set; }
+
+    public Panel One { get; set; }
+    public Panel Three { get; set; }
+}

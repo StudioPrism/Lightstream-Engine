@@ -1,0 +1,32 @@
+Dialog,
+CreateModelFromMeshDialog,
+CreateSingleModelFromMeshDialog {
+	background-color: $SurfaceBackground;
+}
+
+Dialog LineEdit,
+Dialog TextEdit {
+	border: 0px;
+	min-height: 24px;
+	border-radius: 3px;
+	padding: 0px 5px;
+	color: $TextLight;
+}
+
+Dialog LineEdit:focus,
+Dialog TextEdit:focus {
+	color: $TextLight;
+}
+
+Dialog ListView {
+	background-color: transparent;
+	border: 0px;
+}
+
+Dialog Button {
+	min-width: 70px;
+}
+
+Dialog Separator {
+	background-color: $Border;
+}

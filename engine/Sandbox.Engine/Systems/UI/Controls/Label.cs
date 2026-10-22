@@ -1,0 +1,631 @@
+using Microsoft.AspNetCore.Components;
+using Sandbox.Html;
+using System.Globalization;
+
+namespace Sandbox.UI
+{
+	/// <summary>
+	/// A generic text label. Can be made editable.
+	/// </summary>
+	[Library( "label" ), Alias( "text" ), Expose]
+	public partial class Label : Panel
+	{
+		/// <summary>
+		/// Information about the <see cref="Text"/> on a per-element scale. It handles multi-character Unicode units (graphemes) correctly.
+		/// </summary>
+		protected StringInfo StringInfo = new();
+
+		internal string _textToken;
+		internal string _text;
+		internal Rect _textRect;
+		internal TextBlock _textBlock;
+		internal bool IsGeneratedText;
+
+		int layoutStateHash;
+		bool sizeFinalized;
+		Vector2 availableSpace;
+
+		/// <summary>
+		/// A background-clip: text at or above this label is painting its glyphs, so it doesn't draw them itself.
+		/// </summary>
+		bool clipsBackgroundToText;
+
+		[Category( "Selection" )]
+		public bool ShouldDrawSelection
+		{
+			get => _textBlock?.ShouldDrawSelection ?? false;
+			set
+			{
+				if ( _textBlock is null )
+					return;
+
+				if ( _textBlock.ShouldDrawSelection == Selectable && value )
+					return;
+
+				_textBlock.ShouldDrawSelection = Selectable && value;
+				SetNeedsPreLayout();
+			}
+		}
+
+		/// <summary>
+		/// Can be selected
+		/// </summary>
+		[Category( "Selection" )]
+		public bool Selectable { get; set; } = true;
+
+		/// <summary>
+		/// If true and the text starts with #, it will be treated as a language token.
+		/// </summary>
+		public bool Tokenize { get; set; } = true;
+
+		[Hide]
+		public int SelectionStart
+		{
+			get => _textBlock?.SelectionStart ?? 0;
+			set
+			{
+				if ( _textBlock == null ) return;
+				if ( _textBlock.SelectionStart == value ) return;
+
+				_textBlock.SelectionStart = value;
+				SetNeedsPreLayout();
+			}
+		}
+
+		[Hide]
+		public int SelectionEnd
+		{
+			get => _textBlock?.SelectionEnd ?? 0;
+			set
+			{
+				if ( _textBlock == null ) return;
+				if ( _textBlock.SelectionEnd == value ) return;
+
+				_textBlock.SelectionEnd = value;
+				SetNeedsPreLayout();
+			}
+		}
+
+		/// <summary>
+		/// The color used for text selection highlight
+		/// </summary>
+		[Category( "Selection" )]
+		public Color SelectionColor
+		{
+			get => _textBlock?.SelectionColor ?? Color.Cyan.WithAlpha( 0.39f );
+			set
+			{
+				if ( _textBlock == null ) return;
+				if ( _textBlock.SelectionColor == value ) return;
+
+				_textBlock.SelectionColor = value;
+			}
+		}
+
+		public Label()
+		{
+			AddClass( "label" );
+			LayoutTree.SetMeasureFunction( MeasureText );
+		}
+
+		public Label( string text, string classname = null ) : this()
+		{
+			Text = text;
+			AddClass( classname );
+		}
+
+		Vector2 MeasureText( float width, Sandbox.Layout.MeasureMode widthMode, float height, Sandbox.Layout.MeasureMode heightMode )
+		{
+			try
+			{
+				if ( _textBlock == null ) return new Vector2( 2, 10 );
+
+				if ( widthMode == Sandbox.Layout.MeasureMode.MinContent )
+					return _textBlock.MeasureMinContent();
+				if ( heightMode == Sandbox.Layout.MeasureMode.MinContent )
+					return _textBlock.MeasureMinContent( widthMode == Sandbox.Layout.MeasureMode.Undefined ? float.NaN : width );
+
+				availableSpace = new Vector2( width, height );
+
+				Vector2 size;
+
+				if ( sizeFinalized && _textBlock.IsTruncated )
+				{
+					size = _textBlock.BlockSize;
+				}
+				else
+				{
+					size = _textBlock.Measure( width, height );
+				}
+
+				return size;
+			}
+			catch ( System.Exception e )
+			{
+				NativeEngine.EngineGlobal.Plat_MessageBox( e.Message, e.StackTrace );
+				return default;
+			}
+		}
+
+		public override void OnDeleted()
+		{
+			base.OnDeleted();
+
+			_textBlock?.Dispose();
+			_textBlock = null;
+		}
+
+		/// <summary>
+		/// Text to display on the label.
+		/// </summary>
+		[Parameter]
+		public virtual string Text
+		{
+			get => _text;
+			set
+			{
+				value ??= "";
+
+				if ( Tokenize && value != null && value.Length > 1 && value[0] == '#' )
+				{
+					if ( _textToken == value ) return;
+					_textToken = value;
+
+					value = Language.GetPhrase( _textToken[1..] );
+				}
+
+				if ( _text == value )
+					return;
+
+				_text = value;
+				ClearStyleSpans();
+				StringInfo.String = value ?? string.Empty;
+				CaretSantity();
+				LayoutTree?.MarkDirty();
+				SetNeedsPreLayout();
+			}
+		}
+
+		/// <summary>
+		/// Set to true if this is rich text. This means it can support some inline html elements.
+		/// </summary>
+		[Parameter]
+		public bool IsRich { get; set; }
+
+		public override void SetProperty( string name, string value )
+		{
+			if ( name == "text" )
+			{
+				Text = value;
+				return;
+			}
+
+			if ( name == "selectable" )
+			{
+				//Selectable = value.ToBool();
+				return;
+			}
+
+			base.SetProperty( name, value );
+		}
+
+		public override void SetContent( string value )
+		{
+			// alex: This value gets trimmed inside TextBlock based on the WhiteSpace
+			// style value for this label
+			Text = value ?? "";
+		}
+
+		private int _caretPosition;
+
+		/// <summary>
+		/// Position of the text cursor/caret within the text, at which newly typed characters are inserted.
+		/// Setting it keeps it inside the text and scrolls to put it on screen - everything that moves
+		/// the caret goes through here, so nothing has to remember to do either.
+		/// </summary>
+		public int CaretPosition
+		{
+			get => _caretPosition;
+			set
+			{
+				value = value.Clamp( 0, TextLength );
+				if ( _caretPosition == value ) return;
+
+				_caretPosition = value;
+
+				// Moving the caret any other way gives up the x that up and down were aiming for
+				if ( !_movingLine ) _desiredCaretX = null;
+
+				ScrollToCaret();
+			}
+		}
+
+		/// <summary>
+		/// Amount of characters in the text of the text entry. Not bytes.
+		/// </summary>
+		public int TextLength => StringInfo.LengthInTextElements;
+
+		/// <summary>
+		/// Ensure the text caret and selection are in sane positions, that is, not outside of the text bounds.
+		/// </summary>
+		protected void CaretSantity()
+		{
+			// Nothing to clamp on a label nobody is editing, and counting text elements allocates
+			if ( CaretPosition == 0 && SelectionStart == 0 && SelectionEnd == 0 )
+			{
+				ClampScroll();
+				return;
+			}
+
+			if ( CaretPosition > TextLength )
+			{
+				CaretPosition = TextLength;
+				ScrollToCaret();
+			}
+			if ( SelectionStart > TextLength )
+			{
+				SelectionStart = TextLength;
+				ScrollToCaret();
+			}
+			if ( SelectionEnd > TextLength )
+			{
+				SelectionEnd = TextLength;
+				ScrollToCaret();
+			}
+
+			// The text can shrink out from under the scroll offset without the caret moving at all
+			ClampScroll();
+		}
+
+		/// <summary>
+		/// Returns the selected text.
+		/// </summary>
+		public string GetSelectedText()
+		{
+			if ( TextLength == 0 ) return "";
+			if ( !HasSelection() ) return "";
+
+			CaretSantity();
+
+			var s = Math.Min( SelectionStart, SelectionEnd );
+			var e = Math.Max( SelectionStart, SelectionEnd );
+
+			return StringInfo.SubstringByTextElements( s, e - s );
+		}
+
+		public override string GetClipboardValue( bool cut )
+		{
+			if ( LayoutTree?.IsInlineParticipant == true ) return LayoutTree.SelectedInlineText;
+			if ( !HasSelection() )
+				return null;
+
+			var txt = GetSelectedText();
+
+			return txt;
+		}
+
+		public Rect GetCaretRect( int i )
+		{
+			var rect = _textBlock.CaretRect( i );
+			rect.Position += _textRect.Position - caretScroll;
+			rect.Width = 2;
+
+			return rect;
+		}
+
+		internal override void PreLayout( LayoutCascade cascade )
+		{
+			base.PreLayout( cascade );
+
+			string styleContent = null;
+
+			if ( ComputedStyle.Content != null )
+			{
+				styleContent = ComputedStyle.Content;
+
+				if ( styleContent.Length > 1 && styleContent[0] == '#' )
+				{
+					styleContent = Language.GetPhrase( styleContent[1..] );
+				}
+			}
+
+			var text = styleContent ?? Text ?? string.Empty;
+
+			if ( _textBlock is null )
+			{
+				_textBlock = new TextBlock();
+				_textBlock.LookupStyles = HtmlStyleLookup;
+			}
+
+			_textBlock.NoWrap = !Multiline;
+			clipsBackgroundToText = (!IsFixed && cascade.ClipBackgroundToText) || ComputedStyle.BackgroundClip == BackgroundClip.Text;
+
+			if ( IsRich )
+			{
+				_textBlock.SetHtml( text );
+				_textBlock.NoWrap = false;
+			}
+			else
+			{
+				_textBlock.SetText( text );
+			}
+
+			int newStateHash = HashCode.Combine( (int)(availableSpace.x * 100), ScaleToScreen, _textBlock.IsTruncated, hoveredNode );
+
+			if ( newStateHash != layoutStateHash )
+			{
+				layoutStateHash = newStateHash;
+				sizeFinalized = false;
+			}
+
+			_textBlock.StyleSpans = styleSpans;
+			_textBlock.StyleSpanScale = ScaleToScreen;
+			if ( _textBlock.UpdateStyles( ComputedStyle ) )
+			{
+				LayoutTree.MarkDirty();
+				sizeFinalized = false;
+			}
+		}
+
+		/// <summary>
+		/// Where the text is laid out, which scrolls with the caret in a text entry.
+		/// </summary>
+		Rect TextLayoutRect => new Rect( Box.RectInner.Position - caretScroll, Box.RectInner.Size );
+
+		/// <summary>
+		/// The rendered text this label lends to a background-clip: text, and where it sits.
+		/// </summary>
+		internal bool GetTextMask( out Texture texture, out Rect rect )
+		{
+			texture = null;
+			rect = default;
+
+			if ( !clipsBackgroundToText || _textBlock is null || ComputedStyle is null ) return false;
+
+			return _textBlock.GetMask( ComputedStyle, TextLayoutRect, out texture, out rect );
+		}
+
+		private Styles HtmlStyleLookup( INode node )
+		{
+			// Seed with the label's own computed styles so inherited properties are present.
+			// ComputedStyle is already in screen units, so it should never be rescaled.
+			var s = new Styles();
+			s.Add( ComputedStyle );
+
+			// Accumulate stylesheet + inline styles in logical units, scale once, then merge
+			var local = new Styles();
+
+			var blocks = AllStyleSheets
+				.SelectMany( x => x.Nodes )
+				.Select( x => x.Test( node ) )
+				.Where( x => x is not null )
+				.ToList();
+
+			if ( blocks.Count > 0 )
+			{
+				blocks.Sort( StyleOrderer.Instance );
+
+				foreach ( var entry in blocks )
+					local.Add( entry.Block.Styles );
+			}
+
+			// Inline styles applied last, highest specificity wins
+			if ( node.GetAttribute( "style", null ) is string styles )
+			{
+				var p = new Parse( styles );
+				StyleParser.ParseStyles( ref p, local );
+			}
+
+			local.ApplyScale( FindRootPanel().ScaleToScreen );
+			s.Add( local );
+
+			return s;
+		}
+
+		public override void FinalLayout( Vector2 offset )
+		{
+			base.FinalLayout( offset );
+			if ( LayoutTree?.IsInlineParticipant == true ) return;
+
+			if ( !IsVisible ) return;
+			if ( ComputedStyle is null ) return;
+
+			_textBlock?.SizeFinalized( Box.RectInner.Width, Box.RectInner.Height );
+
+			if ( !sizeFinalized )
+			{
+				sizeFinalized = true;
+				LayoutTree.MarkDirty();
+			}
+
+			_textRect = Box.RectInner;
+
+			if ( ComputedStyle.TextAlign == TextAlign.Center )
+			{
+				_textRect.Left += (_textRect.Width - _textBlock.BlockSize.x) * 0.5f;
+			}
+			else if ( ComputedStyle.TextAlign == TextAlign.Right )
+			{
+				_textRect.Left = _textRect.Right - _textBlock.BlockSize.x;
+			}
+
+			if ( ComputedStyle.AlignItems == Align.Center )
+			{
+				_textRect.Top += (_textRect.Height - _textBlock.BlockSize.y) * 0.5f;
+			}
+			else if ( ComputedStyle.AlignItems == Align.FlexEnd )
+			{
+				_textRect.Top = _textRect.Bottom - _textBlock.BlockSize.y;
+			}
+
+			_textRect.Size = _textBlock.BlockSize;
+
+			// Scrolling measures against the visible size, so a resize puts the caret back on screen.
+			// After the text rect is placed, because the caret rect comes from it.
+			if ( _scrolledSize != Box.RectInner.Size )
+			{
+				_scrolledSize = Box.RectInner.Size;
+				ScrollToCaret();
+			}
+
+			ScrollParentToCaret();
+		}
+
+		public override void OnDraw( Painter painter )
+		{
+			if ( LayoutTree?.IsInlineParticipant == true ) return;
+			// Make sure the text is laid out if we have text but no size yet
+			if ( _textBlock != null && _textBlock.BlockSize == default && !string.IsNullOrEmpty( _textBlock.Text ) )
+			{
+				_textBlock.SizeFinalized( Box.RectInner.Width, Box.RectInner.Height );
+			}
+
+			if ( clipsBackgroundToText ) return;
+
+			_textBlock?.Draw( painter, CachedOverrideBlendMode, ComputedStyle, TextLayoutRect, CachedRenderOpacity );
+		}
+
+		public int GetLetterAt( Vector2 pos )
+		{
+			if ( _textBlock == null ) return -1;
+
+			return _textBlock.GetLetterAt( pos );
+		}
+
+		public int GetLetterAtScreenPosition( Vector2 pos ) => GetLetterAt( ScreenPositionToTextRectPosition( pos ) );
+
+		/// <summary>
+		/// Returns the text element under a screen position, or -1 outside the text.
+		/// Unlike caret hit testing, both halves of a character return the same index.
+		/// </summary>
+		public int GetCharacterAtScreenPosition( Vector2 pos ) =>
+			_textBlock?.GetCharacterAt( ScreenPositionToTextRectPosition( pos ) ) ?? -1;
+
+		Vector2 ScreenPositionToTextRectPosition( Vector2 pos )
+		{
+			if ( GlobalMatrix.HasValue )
+			{
+				pos = GlobalMatrix.Value.Transform( pos );
+			}
+
+			var x = pos.x - _textRect.Left;
+			var y = pos.y - _textRect.Top;
+
+			return new Vector2( x, y ) + caretScroll;
+		}
+
+		public bool HasSelection() => ShouldDrawSelection && SelectionStart != SelectionEnd;
+
+		/// <summary>
+		/// When the language changes, if we're token based we need to update to the new phrase.
+		/// </summary>
+		public override void LanguageChanged()
+		{
+			if ( _textToken == null ) return;
+			if ( !Tokenize ) return;
+
+			var token = _textToken;
+			_textToken = null; // skip cache
+			Text = token;
+		}
+
+		INode hoveredNode;
+
+		protected override void OnMouseMove( MousePanelEvent e )
+		{
+			base.OnMouseMove( e );
+
+			if ( _textBlock is null || !IsRich )
+			{
+				hoveredNode = default;
+				return;
+			}
+
+			var hov = _textBlock.GetSpanAt( e.LocalPosition )?.node;
+			if ( hov == hoveredNode ) return;
+
+			if ( hoveredNode is not null )
+			{
+				hoveredNode.SetPseudoClass( PseudoClass.None );
+			}
+
+			hoveredNode = hov;
+
+			if ( hoveredNode is not null )
+			{
+				hoveredNode.SetPseudoClass( PseudoClass.Hover );
+			}
+
+			Style.Cursor = (hoveredNode?.Name == "a") ? "pointer" : null;
+			_textBlock.Dirty();
+			SetNeedsPreLayout();
+		}
+
+		/// <summary>
+		/// Called when a node within rich text (<see cref="IsRich"/>) is clicked, with the clicked
+		/// node. When set, this replaces the default behaviour - which opens a valid http/https
+		/// <c>href</c> on an anchor in the user's browser - letting you inspect the node and handle
+		/// custom anchor schemes or open in-game popups.
+		/// </summary>
+		[Parameter]
+		public Action<INode> OnNodeClicked { get; set; }
+
+		protected override void OnClick( MousePanelEvent e )
+		{
+			base.OnClick( e );
+
+			if ( hoveredNode is null )
+				return;
+
+			if ( OnNodeClicked is not null )
+			{
+				OnNodeClicked.Invoke( hoveredNode );
+				return;
+			}
+
+			if ( hoveredNode.GetAttribute( "href", null ) is not { } url )
+				return;
+
+			bool isValid = Uri.TryCreate( url, UriKind.Absolute, out var parsedUri ) && (parsedUri.Scheme == "http" || parsedUri.Scheme == "https");
+
+			if ( !isValid )
+			{
+				Log.Warning( $"Blocked URL: {url}" );
+				return;
+			}
+
+			//
+			// Modal popup, are you sure etc?
+			//
+
+			System.Diagnostics.Process.Start( new System.Diagnostics.ProcessStartInfo()
+			{
+				FileName = parsedUri.ToString(),
+				UseShellExecute = true,
+				Verb = "open"
+			} );
+		}
+	}
+
+	namespace Construct
+	{
+		public static class LabelConstructor
+		{
+			/// <summary>
+			/// Create a simple text label with given text and CSS classname.
+			/// </summary>
+			public static Label Label( this PanelCreator self, string text = null, string classname = null )
+			{
+				var control = self.panel.AddChild<Label>();
+
+				if ( text != null )
+					control.Text = text;
+
+				if ( classname != null )
+					control.AddClass( classname );
+
+				return control;
+			}
+		}
+	}
+}

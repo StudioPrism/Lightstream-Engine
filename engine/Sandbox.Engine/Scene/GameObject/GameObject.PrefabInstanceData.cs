@@ -1,0 +1,1049 @@
+using Sandbox;
+using Sandbox.Hashing;
+using System.Buffers.Binary;
+using System.Collections.ObjectModel;
+using System.Text.Json.Nodes;
+using static Sandbox.GameObject;
+
+internal class PrefabInstanceData
+{
+	/// <summary>
+	/// Gets the cached patch representing differences between this instance and its source prefab.
+	/// No guarantee this is up to date, except when in editor, calculating a patch is fairly expensive so we only do it when serializing or editing.
+	/// </summary>
+	public Json.Patch Patch => _patch;
+	private Json.Patch _patch = new();
+
+	private GameObject _instanceRoot;
+
+	private Dictionary<Guid, Guid> _instanceGuidToPrefabGuid = new();
+	private Dictionary<Guid, Guid> _prefabGuidToInstanceGuid = new();
+
+	/// <summary>
+	/// Translate from this instances guids to prefab guids
+	/// </summary>
+	public ReadOnlyDictionary<Guid, Guid> InstanceToPrefabLookup => _instanceGuidToPrefabGuid.AsReadOnly();
+	/// <summary>
+	/// Translate from prefab guids to this instances guids
+	/// </summary>
+	public ReadOnlyDictionary<Guid, Guid> PrefabToInstanceLookup => _prefabGuidToInstanceGuid.AsReadOnly();
+
+	/// <summary>
+	/// A prefab instance that is nested only contains the prefab source and lookup data, no patch.
+	/// </summary>
+	public bool IsNested => _isNested;
+	private bool _isNested = false;
+
+	/// <summary>
+	/// The filename of the prefab this object is defined in.
+	/// </summary>
+	public ResourceId PrefabSource { get; private set; }
+
+	public PrefabInstanceData( ResourceId prefabSource, GameObject prefabInstanceRoot, bool isNested )
+	{
+		_instanceRoot = prefabInstanceRoot;
+		PrefabSource = prefabSource;
+		_isNested = isNested;
+	}
+
+	internal sealed record OwnershipSnapshot( ResourceId Source, bool IsNested, Dictionary<Guid, Guid> Mappings )
+	{
+		internal void Restore( GameObject root )
+		{
+			if ( root.PrefabInstance is not { } instance || instance.PrefabSource.Path != Source.Path )
+			{
+				root.InitPrefabInstance( Source, IsNested );
+				instance = root.PrefabInstance;
+			}
+			instance._isNested = IsNested;
+			instance.UpdateLookups( Mappings );
+		}
+	}
+
+	internal OwnershipSnapshot CaptureOwnership() => new( PrefabSource, IsNested, new( _prefabGuidToInstanceGuid ) );
+
+	/// <summary>
+	/// Update the ResourceId used to track the prefab source, needed incase the prefab file was renamed or moved.
+	/// </summary>
+	internal void UpdateSource( PrefabFile prefabFile )
+	{
+		PrefabSource = ResourceId.Get( prefabFile );
+	}
+
+	/// <summary>
+	/// Deterministically derives a stable instance guid for a prefab object with no persisted mapping
+	/// entry (e.g. one added to a nested prefab after its consumers were saved). Stable across cache
+	/// rebuilds, unique per instance. Compatibility contract: changing it invalidates saved identities.
+	/// </summary>
+	internal static Guid DeriveInstanceGuid( Guid seed, Guid prefabGuid )
+	{
+		Span<byte> input = stackalloc byte[32];
+		seed.TryWriteBytes( input[..16] );
+		prefabGuid.TryWriteBytes( input[16..] );
+
+		Span<byte> derived = stackalloc byte[16];
+		BinaryPrimitives.WriteUInt64LittleEndian( derived[..8], XxHash3.HashToUInt64( input ) );
+		BinaryPrimitives.WriteUInt64LittleEndian( derived[8..], XxHash3.HashToUInt64( input, seed: 0x5bd1e9955bd1e995 ) );
+
+		// Mark as an RFC 4122 version 8 (custom) guid so derived ids are well formed and recognizable
+		derived[7] = (byte)((derived[7] & 0x0F) | 0x80);
+		derived[8] = (byte)((derived[8] & 0x3F) | 0x80);
+
+		return new Guid( derived );
+	}
+
+	/// <summary>
+	/// Initialize lookups for this prefab instance.
+	/// </summary>
+	/// <param name="prefabToInstance">Mapping from prefab GUIDs to instance GUIDs</param>
+	public void InitLookups( Dictionary<Guid, Guid> prefabToInstance )
+	{
+		var validatedLookup = CreateValidatedLookup( prefabToInstance );
+		AdoptLookups( validatedLookup );
+	}
+
+	public bool InitMappingsForNestedInstance( Guid id )
+	{
+		Assert.True( IsNested, "This method should only be called on a nested prefab instance." );
+
+		var prefabGameObject = _instanceRoot.OutermostPrefabInstanceRoot.PrefabInstance.FindPrefabGameObjectForInstanceId( id );
+
+		if ( prefabGameObject is null )
+		{
+			Log.Warning( $"Failed to init mappings for nested prefab instance {_instanceRoot}. Prefab is not loaded or does not exist." );
+			return false;
+		}
+
+		// Only collect GUIDs belonging to this nested instance's subtree instead of
+		// copying the entire outermost dictionary — avoids large allocations and page faults.
+		var relevantInstanceGuids = GetRequiredInstanceGuids( _instanceRoot );
+		var outermostLookup = _instanceRoot.OutermostPrefabInstanceRoot.PrefabInstance._instanceGuidToPrefabGuid;
+
+		var current = new Dictionary<Guid, Guid>( relevantInstanceGuids.Count );
+		foreach ( var instanceGuid in relevantInstanceGuids )
+		{
+			if ( outermostLookup.TryGetValue( instanceGuid, out var prefabGuid ) )
+				current[instanceGuid] = prefabGuid;
+		}
+
+		// Use a swap-dictionary to avoid .ToArray() allocations each iteration
+		var next = new Dictionary<Guid, Guid>( current.Count );
+		var droppedEntries = 0;
+
+		// Build a mapping all the way back to the original prefab
+		while ( prefabGameObject is not PrefabCacheScene )
+		{
+			var levelLookup = prefabGameObject.OutermostPrefabInstanceRoot.PrefabInstance._instanceGuidToPrefabGuid;
+
+			next.Clear();
+			foreach ( var (instanceId, prefabId) in current )
+			{
+				if ( levelLookup.TryGetValue( prefabId, out var outerPrefabId ) )
+				{
+					next[instanceId] = outerPrefabId;
+				}
+				else
+				{
+					droppedEntries++;
+				}
+			}
+			(current, next) = (next, current);
+
+			// Step up the hierarchy
+			prefabGameObject = prefabGameObject.OutermostPrefabInstanceRoot.PrefabInstance.FindPrefabGameObjectForInstanceId( prefabGameObject.Id );
+
+			if ( prefabGameObject is null )
+			{
+				Log.Warning( $"Failed to init mappings for nested prefab instance {_instanceRoot}. Prefab is not loaded or does not exist." );
+				return false;
+			}
+		}
+
+		if ( droppedEntries > 0 )
+		{
+			Log.Warning( $"Dropped {droppedEntries} unresolvable mapping entries while rebuilding nested prefab instance mappings for {_instanceRoot} ({PrefabSource}). Identities for those objects will be re-derived." );
+		}
+
+		// Add any new objects that don't have mappings yet (modifying in-place
+		// since 'current' is already a local dictionary we can mutate).
+		foreach ( var requiredGuid in relevantInstanceGuids )
+		{
+			if ( !current.ContainsKey( requiredGuid ) )
+			{
+				current[requiredGuid] = DeriveInstanceGuid( _instanceRoot.Id, requiredGuid );
+			}
+		}
+
+		// Invert mapping
+		var prefabToInstanceMapping = new Dictionary<Guid, Guid>( current.Count );
+		foreach ( var (instanceId, prefabId) in current )
+		{
+			prefabToInstanceMapping[prefabId] = instanceId;
+		}
+
+		InitLookups( prefabToInstanceMapping );
+
+		return true;
+	}
+
+	/// <summary>
+	/// Initialize patch data for this prefab instance.
+	/// </summary>
+	/// <param name="patch">Existing patch to use</param>
+	public void InitPatch( Json.Patch patch )
+	{
+		_patch = patch;
+	}
+
+	private static readonly SerializeOptions _serializeOptions = new();
+
+	/// <summary>
+	/// Updates the cached patch that represents differences between this instance and its source prefab.
+	/// </summary>
+	public void RefreshPatch()
+	{
+		var prefabFile = ResourceLibrary.Get<PrefabFile>( PrefabSource );
+
+		// Prefab file is missing or not yet loaded — preserve the last known patch so the scene
+		// can still be saved and round-tripped. The data will be fully restored when the file returns.
+		if ( prefabFile is null || prefabFile.IsPromise || prefabFile.RootObject is null )
+		{
+			Log.Warning( $"Prefab '{PrefabSource}' is missing. Preserving last known patch for serialization." );
+			return;
+		}
+
+		// Suppress any ambient blob-capture context (e.g. from an in-progress resource save higher
+		// up the call stack). The resulting patch is cached and reapplied long after that context's
+		// lifetime ends, so any embedded data (like mesh blobs) must be self-contained, not a
+		// reference that can only be resolved while that context is still active.
+		using var suppressBlobs = BlobDataSerializer.Suppress();
+
+		var instanceData = _instanceRoot.SerializeStandard( _serializeOptions );
+
+		RemapInstanceIdsToPrefabIds( ref instanceData );
+
+		var prefabScene = (PrefabCacheScene)GetPrefab( PrefabSource );
+		Assert.IsValid( prefabScene );
+
+		_patch = prefabScene.CalculateDifferences( instanceData );
+	}
+
+	/// <summary>
+	/// Clear Patch for this instance, can be used to revert back to the original state.
+	/// </summary>
+	public void ClearPatch( bool keepBasicGoOverridesOnRoot )
+	{
+		var newPatch = new Json.Patch();
+		if ( keepBasicGoOverridesOnRoot )
+		{
+			var rootPrefabId = _instanceGuidToPrefabGuid[_instanceRoot.Id];
+			newPatch.PropertyOverrides.AddRange( _patch.PropertyOverrides.Where( x => Guid.Parse( x.Target.IdValue ) == rootPrefabId && _ignoredProperties.Contains( x.Property ) ) );
+		}
+
+		_patch = newPatch;
+	}
+
+	/// <summary>
+	/// Returns true if this GameObject has been added to a prefab instance.
+	/// </summary>
+	public bool IsAddedGameObject( GameObject obj )
+	{
+		if ( _patch.AddedObjects.Exists( x => Guid.Parse( x.Id.IdValue ) == obj.Id ) )
+		{
+			return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// Returns true if this Component has been added to a prefab instance.
+	/// </summary>
+	public bool IsAddedComponent( Component obj )
+	{
+		if ( _patch.AddedObjects.Exists( x => Guid.Parse( x.Id.IdValue ) == obj.Id ) )
+		{
+			return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// Returns true if the property of the owner was overridden by the prefab instance.
+	/// </summary>
+	public bool IsPropertyOverridden( object owner, string propertyName, bool ignoreBasicGoOverrides = false )
+	{
+		// always ignore version
+		if ( propertyName == JsonKeys.Version ) return false;
+
+		var targetId = FindPrefabIdForInstanceObject( owner );
+
+		// If it doesn't exist in prefab it's an added object, so return false
+		if ( targetId == Guid.Empty ) return false;
+
+		if ( owner is GameTransform gt )
+		{
+			propertyName = RemapTransformPropertyName( propertyName );
+		}
+
+		if ( ignoreBasicGoOverrides && ShouldIgnoreBasicOverride( targetId, propertyName ) ) return false;
+
+		return _patch.PropertyOverrides.Exists( x => Guid.Parse( x.Target.IdValue ) == targetId && x.Property == propertyName );
+	}
+
+	/// <summary>
+	/// Returns true if the prefab instance was modified.
+	/// 1. If any property was changed on any descendant
+	/// 2. If any GameObject/Component was added
+	/// 3. If any GameObject/Component was moved
+	/// 4. If any GameObject/Component was removed
+	/// </summary>
+	public bool IsModified()
+	{
+		var hasPropertyOverride = _patch.PropertyOverrides.Exists( x =>
+		{
+			var propertyName = x.Property;
+			if ( ShouldIgnoreBasicOverride( Guid.Parse( x.Target.IdValue ), propertyName ) )
+			{
+				return false;
+			}
+
+			return true;
+		} );
+
+		return hasPropertyOverride || _patch.AddedObjects.Count > 0 || _patch.MovedObjects.Count > 0 || _patch.RemovedObjects.Count > 0;
+	}
+
+	/// <summary>
+	/// Some properties are always overridden by a prefab instance, we may want to ignore them so they don't show as modified in the UI.
+	/// </summary>
+	private static readonly HashSet<string> _ignoredProperties =
+	[
+		JsonKeys.Position,
+			JsonKeys.Rotation,
+			JsonKeys.Scale,
+			JsonKeys.Name,
+			JsonKeys.Flags,
+			JsonKeys.Enabled
+	];
+
+	/// <summary>
+	/// Determines if a basic GameObject override should be ignored.
+	/// </summary>
+	private bool ShouldIgnoreBasicOverride( Guid propertyPrefabTargetId, string propertyName )
+	{
+		// We only want to ignore these basic overrides for overrides targeting the root
+		if ( !_instanceRoot.IsOutermostPrefabInstanceRoot ) return false;
+		if ( _instanceGuidToPrefabGuid.GetValueOrDefault( _instanceRoot.Id ) != propertyPrefabTargetId ) return false;
+
+		propertyName = RemapTransformPropertyName( propertyName );
+		return _ignoredProperties.Contains( propertyName );
+	}
+
+	/// <summary>
+	/// Returns true if:
+	/// 1. Any property of the GameObject or descendant has been modified
+	/// 2. If any GameObject/Component was added/removed to the GameObject
+	/// </summary>
+	public bool IsGameObjectModified( GameObject obj, bool ignoreBasicGoOverrides = false )
+	{
+		var targetId = FindPrefabIdForInstanceObject( obj );
+		if ( targetId == Guid.Empty ) return false;
+
+		// Check for property overrides (either on this GameObject or its components)
+		bool hasPropertyOverride = _patch.PropertyOverrides.Exists( x =>
+		{
+			if ( IsPropertyOverridden( obj, x.Property, ignoreBasicGoOverrides ) ) return true;
+
+			var targetInstanceGuid = _prefabGuidToInstanceGuid.GetValueOrDefault( Guid.Parse( x.Target.IdValue ) );
+			var component = obj.Scene.Directory.FindComponentByGuid( targetInstanceGuid );
+			return component != null && component.GameObject == obj;
+		} );
+		if ( hasPropertyOverride ) return true;
+
+		// Check for added children or components
+		bool hasAddedObject = _patch.AddedObjects.Exists( x => Guid.Parse( x.Parent.IdValue ) == targetId );
+		if ( hasAddedObject ) return true;
+
+		// Check for removed children or components
+		var prefabScene = GameObject.GetPrefab( PrefabSource );
+		bool hasRemovedObject = _patch.RemovedObjects.Exists( x =>
+		{
+			var removedId = Guid.Parse( x.Id.IdValue );
+
+			var prefabGameObj = prefabScene.Scene.Directory.FindByGuid( removedId );
+			var isGameObjectRemoved = prefabGameObj != null && prefabGameObj.Parent?.Id == targetId;
+			if ( isGameObjectRemoved )
+				return true;
+
+			var prefabComponent = prefabScene.Scene.Directory.FindComponentByGuid( removedId );
+			var isComponentRemoved = prefabComponent != null && prefabComponent.GameObject?.Id == targetId;
+			return isComponentRemoved;
+		} );
+		return hasRemovedObject;
+	}
+
+	/// <summary>
+	/// Returns true if any property of the component was changed on the instance.
+	/// </summary>
+	public bool IsComponentModified( Component comp )
+	{
+		var targetId = FindPrefabIdForInstanceObject( comp );
+		// If target doesn't exists this means this is an added object with no equivalent in the prefab
+		// therefore there can't be any property overrides.
+		if ( targetId == Guid.Empty ) return false;
+
+		if ( _patch.PropertyOverrides.Exists( x => IsPropertyOverridden( comp, x.Property ) ) )
+		{
+			return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// Reverts the properties value back to the prefab's value.
+	/// </summary>
+	public void RevertPropertyChange( object owner, string propertyName )
+	{
+		var targetId = FindPrefabIdForInstanceObject( owner );
+		if ( targetId == Guid.Empty ) return;
+
+		if ( owner is GameTransform gt )
+		{
+			propertyName = RemapTransformPropertyName( propertyName );
+		}
+		Patch.PropertyOverrides.RemoveAll( x => Guid.Parse( x.Target.IdValue ) == targetId && x.Property == propertyName );
+
+		if ( owner is GameObject go )
+		{
+			UpdateGameObjectFromPrefab( go );
+		}
+		else if ( owner is Component comp )
+		{
+			UpdateComponentFromPrefab( comp );
+		}
+		else if ( owner is GameTransform gt1 )
+		{
+			UpdateGameObjectFromPrefab( gt1.GameObject );
+		}
+	}
+
+	/// <summary>
+	/// Helper function used when Discarding/Reverting.
+	/// </summary>
+	private void UpdateComponentFromPrefab( Component comp )
+	{
+		var prefabComponent = FindPrefabComponentForInstanceId( comp.Id );
+
+		var prefabComponentJson = prefabComponent.Serialize();
+
+		var updatedInstanceData = Json.ApplyPatch( prefabComponentJson.AsObject(), Patch, DiffObjectDefinitions );
+
+		RemapPrefabIdsToInstanceIds( ref updatedInstanceData );
+
+		comp.DeserializeImmediately( updatedInstanceData.AsObject() );
+	}
+
+	/// <summary>
+	/// Reverts all the components properties back to the prefab's value.
+	/// </summary>
+	public void RevertComponentChanges( Component comp )
+	{
+		var targetId = FindPrefabIdForInstanceObject( comp );
+
+		Patch.PropertyOverrides.RemoveAll( x => Guid.Parse( x.Target.IdValue ) == targetId );
+
+		UpdateComponentFromPrefab( comp );
+	}
+
+	/// <summary>
+	/// Helper function used when Discarding/Reverting.
+	/// </summary>
+	public void UpdateGameObjectFromPrefab( GameObject go, bool revertChanges = false )
+	{
+		var prefabGameObject = FindPrefabGameObjectForInstanceId( go.Id );
+		if ( prefabGameObject is null ) return;
+
+		var prefabGameObjectJson = prefabGameObject.Serialize( new SerializeOptions { SerializePrefabForDiff = true } );
+		var validatedLookup = CreateValidatedLookup( _prefabGuidToInstanceGuid );
+		UpdateLookups( validatedLookup );
+
+		// Reapply our patch
+		var updatedInstanceData = revertChanges ? prefabGameObjectJson : Json.ApplyPatch( prefabGameObjectJson, Patch, DiffObjectDefinitions );
+		RemapPrefabIdsToInstanceIds( ref updatedInstanceData );
+		if ( go.IsOutermostPrefabInstanceRoot )
+		{
+			updatedInstanceData[JsonKeys.EditorSkipPrefabBreakOnRefresh] = true;
+		}
+		go.Deserialize( updatedInstanceData, new DeserializeOptions { IsRefreshing = true } );
+		go.OutermostPrefabInstanceRoot.PrefabInstance.RefreshPatch();
+	}
+
+	/// <summary>
+	/// Reverts all the changes made to the GameObject and descendants (Additions, Removals, PropertyOverrides) back to the prefab's value.
+	/// </summary>
+	public void RevertGameObjectChanges( GameObject go )
+	{
+		Assert.True( go.IsPrefabInstance );
+
+		UpdateGameObjectFromPrefab( go, true );
+	}
+
+	/// <summary>
+	/// Applies the changes made to the property back to the prefab.
+	/// </summary>
+	public void ApplyPropertyChangeToPrefab( object owner, string propertyName )
+	{
+		var targetId = FindPrefabIdForInstanceObject( owner );
+		var goId = owner is Component comp ? comp.GameObject.Id : FindInstanceId( owner );
+
+		if ( owner is GameTransform gt )
+		{
+			propertyName = RemapTransformPropertyName( propertyName );
+		}
+
+		if ( targetId == Guid.Empty ) return;
+
+		// Mini patch to apply single property change back to prefab
+		var applyChangesPatch = new Json.Patch();
+		var instancePropOverride = Patch.PropertyOverrides
+			.Where( x => Guid.Parse( x.Target.IdValue ) == targetId && x.Property == propertyName )
+			.FirstOrDefault();
+
+		Assert.True( instancePropOverride != default );
+
+		RemapInstanceIdsToPrefabIds( ref instancePropOverride.Value );
+
+		applyChangesPatch.PropertyOverrides.Add( instancePropOverride );
+
+		// To apply a patch and to cover both go and component overrides, we need to serialize the full go
+		var prefabGameObject = FindPrefabGameObjectForInstanceId( goId );
+
+		var prefabGameObjectJson = prefabGameObject.Serialize( new SerializeOptions { SerializePrefabForDiff = true } );
+
+		var updatedPrefabGameObjectJson = Json.ApplyPatch( prefabGameObjectJson, applyChangesPatch, DiffObjectDefinitions );
+
+		prefabGameObject.Deserialize( updatedPrefabGameObjectJson, new GameObject.DeserializeOptions { IsRefreshing = true } );
+
+		Assert.True( prefabGameObject.Scene is PrefabCacheScene );
+
+		var prefabScene = (PrefabCacheScene)prefabGameObject.Scene;
+		prefabScene.ToPrefabFile();
+
+		RefreshPatch();
+	}
+
+	/// <summary>
+	/// Applies the changes made to the component back to the prefab.
+	/// </summary>
+	public void ApplyComponentChangesToPrefab( Component comp )
+	{
+		var instanceObjectJson = comp.Serialize();
+
+		RemapGuids( instanceObjectJson, _instanceGuidToPrefabGuid );
+
+		var prefabComponent = FindPrefabComponentForInstanceId( comp.Id );
+
+		prefabComponent.DeserializeImmediately( instanceObjectJson.AsObject() );
+
+		var prefabFile = ResourceLibrary.Get<PrefabFile>( PrefabSource );
+
+		Assert.True( prefabComponent.Scene is PrefabCacheScene );
+
+		var prefabScene = (PrefabCacheScene)prefabComponent.Scene;
+		prefabScene.ToPrefabFile();
+
+		RefreshPatch();
+	}
+
+
+	/// <summary>
+	/// Prepares instance JSON data for application to a prefab by updating GUID mappings 
+	/// and translating instance GUIDs to their prefab equivalents.
+	/// </summary>
+	private JsonObject PrepareInstanceJsonForPrefabUpdate( GameObject instanceGameObject )
+	{
+		var instanceGameObjectJson = instanceGameObject.SerializeStandard( new SerializeOptions { SerializeForPrefabInstanceToPrefabUpdate = true } );
+
+		PrepareLookupsForPrefabUpdate( instanceGameObject );
+
+		// Remap all GUIDs in the JSON to their prefab equivalents
+		RemapGuids( instanceGameObjectJson, _instanceGuidToPrefabGuid, remapAddedPrefabInstances: true );
+
+		return instanceGameObjectJson;
+	}
+
+	private void PrepareLookupsForPrefabUpdate( GameObject instanceGameObject )
+	{
+		// Update the instance-to-prefab mapping with any new objects
+		AddNewObjectsToInstanceToPrefabLookup( instanceGameObject, _instanceGuidToPrefabGuid );
+
+		// Ensure prefab-to-instance mapping is up to date
+		foreach ( var (instanceGuid, prefabGuid) in _instanceGuidToPrefabGuid )
+		{
+			if ( !_prefabGuidToInstanceGuid.ContainsKey( prefabGuid ) )
+			{
+				_prefabGuidToInstanceGuid[prefabGuid] = instanceGuid;
+			}
+		}
+
+	}
+
+	/// <summary>
+	/// Applies the changes made to the GameObject and descendants back to the prefab.
+	/// </summary>
+	public void ApplyGameObjectChangesToPrefab( GameObject go )
+	{
+		var prefabGameObject = FindPrefabGameObjectForInstanceId( go.Id );
+
+		var instanceGameObjectJson = PrepareInstanceJsonForPrefabUpdate( go );
+
+		prefabGameObject.Deserialize( instanceGameObjectJson, new DeserializeOptions { IsRefreshing = true } );
+
+		if ( prefabGameObject.IsPrefabInstance )
+		{
+			prefabGameObject.OutermostPrefabInstanceRoot.PrefabInstance.RefreshPatch();
+		}
+
+		Assert.True( prefabGameObject.Scene is PrefabCacheScene );
+
+		var prefabScene = (PrefabCacheScene)prefabGameObject.Scene;
+		prefabScene.ToPrefabFile();
+
+		// Applying to this instance's source must preserve the root's ownership.
+		if ( go == _instanceRoot )
+			ConvertChildPrefabInstancesToNested( go );
+		else
+			ConvertAllPrefabInstancesToNested( go );
+
+		RefreshPatch();
+	}
+
+	/// <summary>
+	/// Adds an added GameObject or PrefabInstance from the instance to the prefab.
+	/// </summary>
+	public void AddGameObjectToPrefab( GameObject go )
+	{
+		Assert.True( IsAddedGameObject( go ), "GameObject must be an added object in the prefab instance." );
+		Assert.True( go.Parent != null, "GameObject must have a parent." );
+
+		JsonObject instanceGameObjectJson;
+
+		// If the go we are trying to add to the prefab is an added prefab instance
+		// we need to serialize it differently
+		if ( go.IsOutermostPrefabInstanceRoot )
+		{
+			instanceGameObjectJson = go.Serialize();
+
+			PrepareLookupsForPrefabUpdate( go.Parent );
+
+			// Remap all GUIDs in the JSON to their prefab equivalents
+			RemapGuids( instanceGameObjectJson, _instanceGuidToPrefabGuid, remapAddedPrefabInstances: true );
+		}
+		else
+		{
+			instanceGameObjectJson = PrepareInstanceJsonForPrefabUpdate( go );
+		}
+
+		var prefabParentObject = FindPrefabGameObjectForInstanceId( go.Parent.Id );
+
+		var prefabNewGo = prefabParentObject.Scene.CreateObject( go.Enabled );
+		prefabNewGo.Deserialize( instanceGameObjectJson );
+
+		var nextSibling = go.GetNextSibling( false );
+
+		// Find the next sibling that is not an added object,
+		// we can't use added objects as sibling reference as they don't exist in the prefab
+		while ( nextSibling != null && IsAddedGameObject( nextSibling ) )
+		{
+			nextSibling = nextSibling.GetNextSibling( false );
+		}
+		if ( nextSibling != null )
+		{
+			var prefabNextSibling = FindPrefabGameObjectForInstanceId( nextSibling.Id );
+			if ( prefabNextSibling != null )
+			{
+				prefabNextSibling.AddSibling( prefabNewGo, true );
+			}
+			else
+			{
+				// Shouldn't be possible to get here, we catch it anyway and make sure nto to corrupt anyhting by reverting the action
+				Log.Error( "Something went wrong when applying to prefab, please report what you did." );
+				prefabNewGo.DestroyImmediate();
+				return;
+			}
+		}
+		else
+		{
+			prefabNewGo.SetParent( prefabParentObject );
+		}
+
+		Assert.True( prefabParentObject.Scene is PrefabCacheScene );
+
+		var prefabScene = (PrefabCacheScene)prefabParentObject.Scene;
+		prefabScene.ToPrefabFile();
+
+		PrefabInstanceData.ConvertAllPrefabInstancesToNested( go );
+
+		RefreshPatch();
+	}
+
+	/// <summary>
+	/// Overrides the prefab definition with the current instance state, making the instance match the prefab exactly.
+	/// </summary>
+	public void OverridePrefabWithInstance()
+	{
+		Assert.True( _instanceRoot.IsOutermostPrefabInstanceRoot );
+
+		var prefabGameObject = FindPrefabGameObjectForInstanceId( _instanceRoot.Id );
+
+		var goTransform = _instanceRoot.LocalTransform;
+
+		_instanceRoot.LocalPosition = prefabGameObject.LocalPosition;
+		var instanceGameObjectJson = PrepareInstanceJsonForPrefabUpdate( _instanceRoot );
+		_instanceRoot.LocalTransform = goTransform;
+
+		prefabGameObject.Deserialize( instanceGameObjectJson, new DeserializeOptions { IsRefreshing = true } );
+
+		if ( prefabGameObject.IsPrefabInstance )
+		{
+			prefabGameObject.OutermostPrefabInstanceRoot.PrefabInstance.RefreshPatch();
+		}
+
+		Assert.True( prefabGameObject.Scene is PrefabCacheScene );
+
+		var prefabScene = (PrefabCacheScene)prefabGameObject.Scene;
+		prefabScene.ToPrefabFile();
+
+		// Previously added PrefabInstances are now nested, so convert them
+		PrefabInstanceData.ConvertChildPrefabInstancesToNested( _instanceRoot );
+
+		// Patch should be empty now
+		ClearPatch( true );
+
+		// Fetch latest data from prefab to ensure everything is up to date
+		UpdateGameObjectFromPrefab( _instanceRoot );
+	}
+
+	public void RemoveHierarchyFromLookup( GameObject go )
+	{
+		var gos = GetRequiredInstanceGuids( go );
+		var newLookup = new Dictionary<Guid, Guid>( _prefabGuidToInstanceGuid.Count );
+		foreach ( var (prefabGuid, instanceGuid) in _prefabGuidToInstanceGuid )
+		{
+			// Only keep the mapping if the instanceGuid is not in the gos set
+			if ( gos.Contains( instanceGuid ) )
+			{
+				continue;
+			}
+			newLookup[prefabGuid] = instanceGuid;
+		}
+		UpdateLookups( newLookup );
+	}
+
+	/// <summary>
+	/// Creates the bidirectional GUID lookups from the provided mapping.
+	/// </summary>
+	private void UpdateLookups( Dictionary<Guid, Guid> prefabToInstance )
+	{
+		_instanceGuidToPrefabGuid.Clear();
+		_prefabGuidToInstanceGuid.Clear();
+		_instanceGuidToPrefabGuid.EnsureCapacity( prefabToInstance.Count );
+		_prefabGuidToInstanceGuid.EnsureCapacity( prefabToInstance.Count );
+		foreach ( var (prefabGuid, instanceGuid) in prefabToInstance )
+		{
+			_instanceGuidToPrefabGuid[instanceGuid] = prefabGuid;
+			_prefabGuidToInstanceGuid[prefabGuid] = instanceGuid;
+		}
+	}
+
+	/// <summary>
+	/// Like <see cref="UpdateLookups"/> but takes ownership of <paramref name="prefabToInstance"/> instead of copying it.
+	/// </summary>
+	private void AdoptLookups( Dictionary<Guid, Guid> prefabToInstance )
+	{
+		_prefabGuidToInstanceGuid = prefabToInstance;
+		_instanceGuidToPrefabGuid.Clear();
+		_instanceGuidToPrefabGuid.EnsureCapacity( prefabToInstance.Count );
+		foreach ( var (prefabGuid, instanceGuid) in prefabToInstance )
+		{
+			_instanceGuidToPrefabGuid[instanceGuid] = prefabGuid;
+		}
+	}
+
+	private Component FindPrefabComponentForInstanceId( Guid instanceId )
+	{
+		var prefabGuid = _instanceGuidToPrefabGuid.GetValueOrDefault( instanceId );
+		if ( prefabGuid == Guid.Empty ) return null;
+
+		var prefabScene = GameObject.GetPrefab( PrefabSource );
+		if ( prefabScene is null ) return null;
+
+		return prefabScene.Scene.Directory.FindComponentByGuid( prefabGuid );
+	}
+
+	private GameObject FindPrefabGameObjectForInstanceId( Guid instanceId )
+	{
+		var prefabGuid = _instanceGuidToPrefabGuid.GetValueOrDefault( instanceId );
+		if ( prefabGuid == Guid.Empty ) return null;
+
+		var prefabScene = GameObject.GetPrefab( PrefabSource );
+		if ( prefabScene is null ) return null;
+
+		return prefabScene.Scene.Directory.FindByGuid( prefabGuid );
+	}
+
+	private Guid FindPrefabIdForInstanceObject( object owner )
+	{
+		return _instanceGuidToPrefabGuid.GetValueOrDefault( FindInstanceId( owner ), Guid.Empty );
+	}
+
+	private Guid FindInstanceId( object owner )
+	{
+		return owner switch
+		{
+			GameObject go => go.Id,
+			Component comp => comp.Id,
+			GameTransform gt => gt.GameObject.Id,
+			_ => Guid.Empty
+		};
+	}
+
+	/// <summary>
+	/// We don't serialize the GameTransform, we always serialize Position, Rotation and Scale.
+	/// So we always need to use those keys, when handling GameTransform properties.
+	/// </summary>
+	private string RemapTransformPropertyName( string propertyName )
+	{
+		if ( propertyName == "LocalPosition" ) return JsonKeys.Position;
+		if ( propertyName == "LocalRotation" ) return JsonKeys.Rotation;
+		if ( propertyName == "LocalScale" ) return JsonKeys.Scale;
+
+		return propertyName;
+	}
+
+	// Helper functions
+
+	/// <summary>
+	/// Remap all guids in the json to the new guids in the remap table.
+	/// </summary>
+	/// <param name="node">Node that will be modified.</param>
+	/// <param name="remapTable">The table to use for guid translation.</param>
+	/// <param name="remapAddedPrefabInstances">If true, will also remap objects that have their own mapping (added prefab instances).</param>
+	private static void RemapGuids( JsonNode node, Dictionary<Guid, Guid> remapTable, bool remapAddedPrefabInstances = false )
+	{
+		if ( node is JsonObject jsonObject )
+		{
+			// Important, don't remap objects with their own mapping
+			if ( !remapAddedPrefabInstances && node.AsObject().ContainsKey( JsonKeys.PrefabIdToInstanceId ) )
+			{
+				return;
+			}
+
+			foreach ( var (k, v) in jsonObject )
+			{
+				RemapGuids( v, remapTable, remapAddedPrefabInstances );
+			}
+
+			return;
+		}
+
+		if ( node is JsonArray array )
+		{
+			for ( int i = 0; i < array.Count; i++ )
+			{
+				RemapGuids( array[i], remapTable, remapAddedPrefabInstances );
+			}
+			return;
+		}
+
+		if ( node is JsonValue value )
+		{
+			if ( !value.TryGetValue<Guid>( out var guid ) ) return;
+			if ( !remapTable.TryGetValue( guid, out var updatedGuid ) ) return;
+
+			value.ReplaceWith( updatedGuid );
+		}
+	}
+
+	public void RemapPrefabIdsToInstanceIds( ref JsonNode node )
+	{
+		RemapGuids( node, _prefabGuidToInstanceGuid );
+	}
+
+	public void RemapPrefabIdsToInstanceIds( ref JsonObject node )
+	{
+		RemapGuids( node, _prefabGuidToInstanceGuid );
+	}
+
+	public void RemapInstanceIdsToPrefabIds( ref JsonNode node )
+	{
+		RemapGuids( node, _instanceGuidToPrefabGuid );
+	}
+
+	public void RemapInstanceIdsToPrefabIds( ref JsonObject node )
+	{
+		RemapGuids( node, _instanceGuidToPrefabGuid );
+	}
+
+	public void ValidatePrefabLookup()
+	{
+		var validatedLookup = CreateValidatedLookup( _prefabGuidToInstanceGuid );
+		UpdateLookups( validatedLookup );
+	}
+
+	/// <summary>
+	/// Ensures the prefab-to-instance GUID mapping is valid by adding missing entries and removing obsolete ones.
+	/// </summary>
+	/// <param name="oldPrefabToInstanceLookup">The existing GUID mapping to validate</param>
+	/// <returns>A validated mapping containing only relevant GUIDs with appropriate instance IDs. Always a fresh dictionary the caller owns.</returns>
+	private Dictionary<Guid, Guid> CreateValidatedLookup( Dictionary<Guid, Guid> oldPrefabToInstanceLookup )
+	{
+		var prefabFile = ResourceLibrary.Get<PrefabFile>( PrefabSource );
+
+		if ( !prefabFile.IsValid() )
+		{
+			Log.Warning( $"Failed to serialize a prefab instance {_instanceRoot}. Prefab file is not valid, did you delete the Prefab {PrefabSource}?" );
+			return new Dictionary<Guid, Guid>( oldPrefabToInstanceLookup );
+		}
+
+		var prefabScene = SceneUtility.GetPrefabScene( prefabFile );
+
+		if ( !prefabScene.IsValid() )
+		{
+			Log.Warning( $"Failed to serialize a prefab instance {_instanceRoot}. Prefab scene is not valid, did you delete the Prefab {PrefabSource}?" );
+			return new Dictionary<Guid, Guid>( oldPrefabToInstanceLookup );
+		}
+
+		// Build only the mappings the current prefab needs, preserving existing instance IDs.
+		var directory = prefabScene.Directory;
+		var newLookup = new Dictionary<Guid, Guid>( directory.GameObjectCount + directory.ComponentCount + 1 );
+		foreach ( var gameObject in directory.AllGameObjects )
+		{
+			if ( gameObject.IsValid() && !gameObject.Flags.Contains( GameObjectFlags.NotSaved ) )
+				AddMapping( gameObject.Id );
+		}
+		foreach ( var component in directory.AllComponents )
+		{
+			if ( component.IsValid() && !component.Flags.Contains( ComponentFlags.NotSaved ) )
+				AddMapping( component.Id );
+		}
+
+		// The root must always be mapped, even when marked NotSaved.
+		AddMapping( prefabScene.Id );
+		return newLookup;
+
+		void AddMapping( Guid prefabId )
+		{
+			newLookup[prefabId] = oldPrefabToInstanceLookup.TryGetValue( prefabId, out var instanceId )
+				? instanceId
+				: DeriveInstanceGuid( _instanceRoot.Id, prefabId );
+		}
+	}
+
+	/// <summary>
+	/// Adds new GUID mappings to the instance lookup in-place for any GUIDs not already present.
+	/// </summary>
+	private static void AddNewObjectsToInstanceToPrefabLookup( GameObject instanceRoot, Dictionary<Guid, Guid> instanceToPrefabLookup )
+	{
+		// Collect all required GUIDs from the instance hierarchy
+		var requiredGuids = GetRequiredInstanceGuids( instanceRoot );
+		Assert.True( requiredGuids.Contains( instanceRoot.Id ) );
+
+		// Add missing mappings
+		foreach ( var requiredObjId in requiredGuids )
+		{
+			if ( !instanceToPrefabLookup.ContainsKey( requiredObjId ) )
+			{
+				instanceToPrefabLookup.Add( requiredObjId, DeriveInstanceGuid( instanceRoot.Id, requiredObjId ) );
+			}
+		}
+	}
+
+	/// <summary>
+	/// Gets all GUIDs contained inside a go hierarchy
+	/// </summary>
+	private static HashSet<Guid> GetRequiredInstanceGuids( GameObject go )
+	{
+		var result = new HashSet<Guid>();
+
+		foreach ( var gameObject in go.GetAllObjects( false ) )
+		{
+			if ( !gameObject.Flags.Contains( GameObjectFlags.NotSaved ) )
+				result.Add( gameObject.Id );
+		}
+
+		foreach ( var component in go.Components.GetAll( FindMode.InSelf | FindMode.InDescendants ) )
+		{
+			if ( !component.Flags.Contains( ComponentFlags.NotSaved ) )
+				result.Add( component.Id );
+		}
+
+		result.Add( go.Id );
+		return result;
+	}
+
+	public void ConvertNestedToFullPrefabInstance()
+	{
+		_isNested = false;
+		RefreshPatch();
+	}
+
+	public static void ConvertTopLevelNestedToFullPrefabInstances( GameObject go )
+	{
+		foreach ( var child in go.Children )
+		{
+			if ( child.IsNestedPrefabInstanceRoot )
+			{
+				child.PrefabInstance.ConvertNestedToFullPrefabInstance();
+			}
+			else
+			{
+				ConvertTopLevelNestedToFullPrefabInstances( child );
+			}
+		}
+	}
+
+	public static void BreakAllPrefabInstanceInHierarchy( GameObject go )
+	{
+		if ( go.IsPrefabInstanceRoot )
+		{
+			go.ClearPrefabInstance();
+		}
+		foreach ( var child in go.Children )
+		{
+			BreakAllPrefabInstanceInHierarchy( child );
+		}
+	}
+
+	/// <summary>
+	/// Converts full prefab instance roots to nested instances, starting at and including <paramref name="go"/>.
+	/// Use after <paramref name="go"/> was written into a prefab and its instances now live inside it.
+	/// </summary>
+	public static void ConvertAllPrefabInstancesToNested( GameObject go )
+	{
+		if ( go.IsOutermostPrefabInstanceRoot )
+		{
+			go.PrefabInstance._isNested = true;
+		}
+		else
+		{
+			ConvertChildPrefabInstancesToNested( go );
+		}
+	}
+
+	/// <summary>
+	/// Converts full prefab instance roots below <paramref name="go"/> to nested instances, excluding
+	/// <paramref name="go"/> itself. Use after applying an instance root back to its prefab: its added
+	/// instances are now part of the prefab, but the root's own relationship to anything above is unchanged.
+	/// </summary>
+	public static void ConvertChildPrefabInstancesToNested( GameObject go )
+	{
+		foreach ( var child in go.Children )
+		{
+			ConvertAllPrefabInstancesToNested( child );
+		}
+	}
+}

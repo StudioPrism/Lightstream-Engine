@@ -1,0 +1,46 @@
+{
+  "HasHumanSkin": false,
+  "HumanSkinModel": null,
+  "HumanSkinMaterial": null,
+  "HumanEyesMaterial": null,
+  "HumanSkinBodyGroups": 0,
+  "HumanSkinMaterialGroup": null,
+  "HumanSkinTags": null,
+  "Title": "Wizard Gown",
+  "Subtitle": null,
+  "Category": "Coat",
+  "ConditionalModels": {},
+  "Tags": null,
+  "Model": "models/citizen_clothes/seasonal/2025/wizard_outfit/wizard_gown/models/wizard_gown.vmdl",
+  "HumanAltModel": "models/citizen_clothes/seasonal/2025/wizard_outfit/wizard_gown/models/wizard_gown_m_human.vmdl",
+  "HumanAltFemaleModel": null,
+  "SkinMaterial": null,
+  "EyesMaterial": null,
+  "MaterialGroup": null,
+  "HeelHeight": 0,
+  "SlotsUnder": "Chest, LeftArm, RightArm",
+  "SlotsOver": "Chest, LeftArm, RightArm, LeftWrist",
+  "HideBody": "Chest",
+  "DeformationMode": "Normal",
+  "AllowTintSelect": false,
+  "TintSelection": {
+    "blend": "Linear",
+    "color": [
+      {
+        "t": 0.5,
+        "c": "1,1,1,1"
+      }
+    ],
+    "alpha": []
+  },
+  "TintDefault": 0.5,
+  "SteamItemDefinitionId": 349443,
+  "Icon": {
+    "Path": "models/citizen_clothes/seasonal/2025/wizard_outfit/wizard_gown/wizard_gown.clothing.png",
+    "Mode": "Chest",
+    "UsePositionOffset": false,
+    "PositionOffset": "4.59996891,0,-5.49999905"
+  },
+  "__references": [],
+  "__version": 0
+}

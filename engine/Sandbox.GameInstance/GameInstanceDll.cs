@@ -1,0 +1,1067 @@
+using Microsoft.CodeAnalysis.CSharp;
+using Sandbox.Audio;
+using Sandbox.Diagnostics;
+using Sandbox.Internal;
+using Sandbox.Modals;
+using Sandbox.UI;
+using Sandbox.Utility;
+using Sandbox.VR;
+using System;
+using System.IO;
+
+namespace Sandbox;
+
+internal partial class GameInstanceDll : Engine.IGameInstanceDll
+{
+	public static GameInstanceDll Current { get; private set; }
+
+	public static GameInstance gameInstance;
+
+	public static PackageLoader PackageLoader { get; set; }
+	PackageLoader.Enroller AssemblyEnroller { get; set; }
+
+	private bool _isAssemblyLoadingPaused;
+	private CancellationTokenSource _loadGameCts;
+	private Task<bool> _loadGameTask;
+
+	public void Bootstrap()
+	{
+		Current = this;
+
+		GlobalContext.Current.Reset();
+		GlobalContext.Current.LocalAssembly = GetType().Assembly;
+
+		Game.InitHost();
+
+		SetupInputContext();
+
+		JsonUpgrader.UpdateUpgraders( TypeLibrary );
+
+		Sandbox.Generator.Processor.DefaultPackageAssetResolver = ResolvePackageAsset;
+
+		PackageManager.OnPackageInstalledToContext += OnPackageInstalled;
+
+		//
+		// Files accessible by game instance
+		//
+		GlobalContext.Current.FileMount = new AggregateFileSystem();
+		{
+			if ( Application.IsEditor )
+			{
+				// If we're in the editor, also mount the cloud folder, which is where we 
+				// download resources and assets from sbox.game to.
+				FileSystem.Mounted.Mount( EngineFileSystem.LibraryContent );
+			}
+
+			FileSystem.Mounted.CreateAndMount( EngineFileSystem.Root, "/core/" );
+
+			if ( !Application.IsStandalone )
+			{
+				FileSystem.Mounted.CreateAndMount( EngineFileSystem.Root, "/addons/citizen/Assets/" );
+			}
+
+			// The editor's UI assets - stylesheets and the like - are visible while editing
+			if ( Application.IsEditor )
+				FileSystem.Mounted.CreateAndMount( EngineFileSystem.Root, "/addons/editor/assets/" );
+		}
+
+		PackageLoader?.Dispose();
+		PackageLoader = new PackageLoader( "GameMenu", typeof( GameInstanceDll ).Assembly );
+		PackageLoader.HotloadWatch( Game.GameAssembly ); // Sandbox.Game is per instance
+		PackageLoader.OnAfterHotload = OnAfterHotload;
+
+		ConVarSystem.AddAssembly( Game.GameAssembly, "game" );
+	}
+
+	public async Task Initialize()
+	{
+		ResetEnvironment();
+		Networking.StartThread();
+
+		if ( !Application.IsStandalone )
+		{
+			await Mounting.MountConfig.Mount();
+		}
+	}
+
+	public void Exiting()
+	{
+		Networking.Disconnect();
+		Networking.StopThread();
+
+		Event.Run( "app.exit" );
+		Game.Cookies?.Save();
+
+		// Release InputContext references so the UISystem
+		// chain (and any RenderAttributes it holds) can be collected.
+		if ( InputContext is not null )
+		{
+			InputContext.KeyboardFocusPanel = null;
+			InputContext.MouseFocusPanel = null;
+			InputContext = null;
+		}
+	}
+
+	static int Counter;
+
+	void OnAfterHotload()
+	{
+		GlobalContext.Current.OnHotload();
+		Game.ActiveScene?.OnHotload();
+		Event.Run( "hotloaded" );
+	}
+
+	/// <summary>
+	/// Called from the code generator. The game package should already contain this package's content
+	/// so we just need to work out where it's meant to point to
+	/// </summary>
+	private string ResolvePackageAsset( string packageName )
+	{
+		Package package = Package.FetchAsync( packageName, false ).Result;
+		return package?.PrimaryAsset;
+	}
+
+	/// <summary>
+	/// This should reset our environment to a clean state.
+	/// </summary>
+	public void ResetEnvironment()
+	{
+		var hadPreviousEnvironment = gameInstance is not null || AssemblyEnroller is not null || DidMountNetworkedFiles;
+
+		// The menu loaded its resources moments ago during startup, so there is nothing to reset yet.
+		var menuResourcesCurrent = !hadPreviousEnvironment && !Application.IsEditor;
+		// Bootstrap and the menu just built their type libraries, so the first game start has none to rebuild.
+		var firstStartup = !hadPreviousEnvironment && !Application.IsEditor;
+
+		using var scope = GlobalContext.GameScope();
+
+		Log.Trace( "Game Menu - ResetEnvironment" );
+
+
+		// Use a new package loader for every game if we're not in editor
+		// The editor is only going to load 1 game and ToolsDll has a reference to it
+		if ( !PackageLoader.ToolsMode )
+		{
+			PackageLoader?.Dispose();
+			PackageLoader = null;
+
+			PackageLoader = new PackageLoader( "GameMenu", typeof( GameInstanceDll ).Assembly );
+			PackageLoader.HotloadWatch( Game.GameAssembly ); // Sandbox.Game is per instance
+			PackageLoader.OnAfterHotload = OnAfterHotload;
+		}
+
+		if ( !menuResourcesCurrent ) ResourceLoader.Clear();
+
+		if ( DidMountNetworkedFiles )
+		{
+			EngineFileSystem.Mounted.UnMount( NetworkedLargeFiles.Files );
+			EngineFileSystem.Mounted.UnMount( NetworkedSmallFiles.Files );
+			EngineFileSystem.ProjectSettings.UnMount( NetworkedConfigFiles.Files );
+			DidMountNetworkedFiles = false;
+		}
+
+		FontManager.Instance.Clear( false );
+		FontManager.Instance.LoadAll( FileSystem.Mounted );
+
+		AssemblyEnroller?.Dispose();
+		AssemblyEnroller = null;
+
+		CodeArchiveTable.Reset();
+		NetworkedSmallFiles.Reset();
+		NetworkedConfigFiles.Reset();
+		NetworkedLangFiles.Reset();
+		NetworkedLargeFiles.Reset();
+		ReplicatedConvars.Reset();
+		ServerPackages.Clear();
+
+		FileWatchers.ForEach( w => w.Dispose() );
+		FileWatchers.Clear();
+
+		NetworkedFileSystem?.Dispose();
+		NetworkedFileSystem = null;
+
+		Screen.UpdateFromEngine();
+
+		if ( !firstStartup ) Game.InitTypeLibrary();
+
+		UserPermission.Load();
+
+		Input.ReadConfig( null );
+		StyleSheet.ResetStyleSheets();
+		Networking.Reset();
+		Connection.Reset();
+		GlobalContext.Current.Reset();
+		NativeResourceCache.Clear();
+		Speech.Recognition.Reset();
+		Json.Initialize();
+		VRSystem.Reset();
+
+		if ( !Application.IsEditor )
+		{
+			Mixer.ResetToDefault();
+		}
+
+		Sound.Clear();
+		Application.ClearGame();
+
+		ReflectionQueryCache.ClearTypeCache();
+
+		EngineFileSystem.ProjectSettings?.Dispose();
+		EngineFileSystem.ProjectSettings = null;
+
+		ProjectSettings.ClearCache();
+		ErrorReporter.ResetCounters();
+
+		AssemblyEnroller = PackageLoader.CreateEnroller( $"gamedll{Counter++}" );
+
+		AssemblyEnroller.OnAssemblyAdded += ( a ) =>
+		{
+			Assert.NotNull( a.Assembly );
+
+			if ( a.IsEditorAssembly )
+				return;
+
+			Game.TypeLibrary.AddAssembly( a.Assembly, true );
+			GlobalContext.Current.AddNodeAssemblyLater( a.Assembly, logErrors: false );
+			ConVarSystem.AddAssembly( a.Assembly, "game" );
+			Cloud.UpdateTypes( a.Assembly );
+			JsonUpgrader.UpdateUpgraders( TypeLibrary );
+
+			if ( !a.IsEditorAssembly && a.CodeArchiveBytes is not null )
+			{
+				AddArchiveToCodeArchiveTable( a );
+			}
+
+			ReplicatedConvars.OnAssembliesLoaded();
+		};
+
+		AssemblyEnroller.OnAssemblyRemoved += ( a ) =>
+		{
+			if ( a.IsEditorAssembly )
+				return;
+
+			Assert.NotNull( a.Assembly );
+
+			Game.NodeLibrary.RemoveAssembly( a.Assembly );
+			Game.TypeLibrary.RemoveAssembly( a.Assembly );
+			ConVarSystem.RemoveAssembly( a.Assembly );
+			JsonUpgrader.UpdateUpgraders( TypeLibrary );
+
+			CodeArchiveTable.Remove( a.Name );
+		};
+
+		AssemblyEnroller.OnAssemblyFastHotload += ( a ) =>
+		{
+			if ( !a.IsEditorAssembly && a.CodeArchiveBytes is not null )
+			{
+				AddArchiveToCodeArchiveTable( a );
+			}
+		};
+
+		if ( !menuResourcesCurrent ) IMenuDll.Current?.Reset();
+
+		if ( hadPreviousEnvironment )
+		{
+			// Run GC and finalizers to clear any native resources held
+			GC.Collect();
+			GC.WaitForPendingFinalizers();
+
+			// Run the queue one more time, since some finalizers queue tasks
+			MainThread.RunQueues();
+		}
+	}
+
+	/// <summary>
+	/// This method grabs the currently loaded assembly's code archive, strips serverside code and spits it back out into the 
+	/// CodeArchiveTable.
+	/// </summary>
+	/// <param name="a"></param>
+	private void AddArchiveToCodeArchiveTable( LoadedAssembly a )
+	{
+		if ( a?.CodeArchiveBytes is null )
+			return;
+
+		// Only send code archives if we're a developer host (editor) or a dedicated server
+		// started with a local project — clients can download remote packages from sbox.game.
+		if ( !Application.IsEditor && !(Application.IsDedicatedServer && Application.GamePackage is LocalPackage) )
+			return;
+
+		//
+		// If we're not a dedicated server OR this isn't a game assembly,
+		// just use the original archive bytes
+		//
+		if ( !Application.IsDedicatedServer || !a.IsGame )
+		{
+			CodeArchiveTable.Set( a.Name, a.CodeArchiveBytes );
+			return;
+		}
+
+		//
+		// Find matching compiler
+		//
+		var compiler = Project.All
+			.Select( x => x.Compiler )
+			.FirstOrDefault( x => x is not null && x.AssemblyName.Equals( a.Name ) );
+
+		if ( compiler?.Output?.Archive is null )
+		{
+			CodeArchiveTable.Set( a.Name, a.CodeArchiveBytes );
+			return;
+		}
+
+		var config = compiler.GetConfiguration();
+
+		//
+		// Strip the SERVER define from the archive's DefineConstants
+		//
+		var parts = config.GetPreprocessorSymbols();
+		parts.RemoveWhere( x => x.Equals( "SERVER", StringComparison.OrdinalIgnoreCase ) );
+
+		var newConfig = config with { DefineConstants = string.Join( ";", parts ) };
+
+		var strippedArchive = new CodeArchive
+		{
+			CompilerName = compiler.Name,
+			Configuration = newConfig
+		};
+
+		foreach ( var tree in compiler.Output.Archive.SyntaxTrees )
+		{
+			var text = tree.GetText().ToString();
+			var newTree = CSharpSyntaxTree.ParseText( text, path: tree.FilePath, encoding: System.Text.Encoding.UTF8, options: newConfig.GetParseOptions() );
+
+			//
+			// Make sure we strip any disabled text trivia from the tree
+			//
+			newTree = Compiler.StripDisabledTextTrivia( newTree );
+			strippedArchive.SyntaxTrees.Add( newTree );
+		}
+
+		//
+		// Need to maintain all the extra stuff in the original archive
+		//
+		foreach ( var f in compiler.Output.Archive.AdditionalFiles )
+		{
+			strippedArchive.AdditionalFiles.Add( f );
+		}
+
+		foreach ( var kv in compiler.Output.Archive.FileMap )
+		{
+			strippedArchive.FileMap[kv.Key] = kv.Value;
+		}
+
+		foreach ( var r in compiler.Output.Archive.References )
+		{
+			strippedArchive.References.Add( r );
+		}
+
+		var bytes = strippedArchive.Serialize();
+		CodeArchiveTable.Set( a.Name, bytes );
+	}
+
+	/// <summary>
+	/// Don't attempt to load new assemblies during <see cref="Tick"/> inside this scope.
+	/// </summary>
+	private DisposeAction PauseLoadingAssemblies()
+	{
+		if ( _isAssemblyLoadingPaused )
+		{
+			// Don't unpause after this scope if we're already paused
+
+			return default;
+		}
+
+		_isAssemblyLoadingPaused = true;
+
+		return new DisposeAction( () =>
+		{
+			_isAssemblyLoadingPaused = false;
+		} );
+	}
+
+	public void FinishLoadingAssemblies()
+	{
+		PackageLoader.Tick();
+
+		// we send table updates right after packageloader has run
+		// so that any further messages will be read with the same
+		// assemblies
+		Networking.System?.SendTableUpdates();
+	}
+
+	public void CloseGame()
+	{
+		Api.Activity.LoadAbandoned( null );
+		CancelLoad();
+
+		if ( gameInstance is null ) return;
+
+		using var scope = GlobalContext.GameScope();
+
+		LeaveGame( disconnect: true );
+
+		LoadingScreen.IsVisible = false;
+		LoadingScreen.Media = null;
+
+		ResetEnvironment();
+
+		Mounting.MountUtility.TickPreviewRenders();
+	}
+
+	/// <summary>
+	/// Shut the running game down so nothing of it carries over: its scene, its sounds, its settings and,
+	/// unless we're joining a session that's already open, its network session.
+	/// </summary>
+	private void LeaveGame( bool disconnect )
+	{
+		Analytics.GameClosed();
+		using var scope = GlobalContext.GameScope();
+
+		if ( gameInstance is not null )
+		{
+			ConVarSystem.SaveAll();
+
+			// Scope disconnect so we can shutdown game before disconnect and stop game objects from sending network destroy,
+			// orphaned action should take care of it.
+			using ( disconnect ? Networking.DisconnectScope() : null )
+			{
+				gameInstance.Shutdown();
+				gameInstance = null;
+				IGameInstance.Current = null;
+			}
+
+			Sound.StopAll( 0.2f );
+		}
+		else if ( disconnect )
+		{
+			Networking.Disconnect();
+		}
+
+		Application.ClearGame();
+	}
+
+	internal Input.Context _perFrameInput = Input.Context.Create( "ClientPerFrame" );
+
+	public void Tick()
+	{
+		var scene = Game.ActiveScene;
+
+		using var sceneScope = new ScenePushScope( scene );
+
+		if ( scene is not null )
+		{
+			// Update the time now that we're in the scene scope
+			scene.UpdateTime( RealTime.Delta );
+
+			// If we're a client then advance server time
+			scene.SyncServerTime();
+
+			// push this time scope now that the scene has updated time
+			Time.Update( scene.TimeNow, scene.TimeDelta );
+		}
+
+		if ( gameInstance?.WantsToQuit ?? false )
+		{
+			CloseGame();
+		}
+		else
+		{
+			//
+			// Update input
+			//
+			{
+				_perFrameInput.Flip();
+				_perFrameInput.Push();
+				Input.Process();
+			}
+
+			//
+			// Recieve incoming network messages, send heartbeat and other outgoing messages
+			//
+			Networking.PreFrameTick();
+
+			//
+			// We may have got new assemblies in the network update,
+			// so finish loading them now before running updates
+			//
+			if ( !_isAssemblyLoadingPaused )
+			{
+				FinishLoadingAssemblies();
+			}
+
+			//
+			// Run the actual game scene tick
+			//
+			using ( Performance.Scope( "GameFrame" ) )
+			{
+				// The old scene could be invalid here as a network message may end
+				// up destroying it (such as changing a scene)
+				if ( scene.IsValid() )
+				{
+					RunGameFrame( scene );
+				}
+			}
+
+			Networking.PostFrameTick();
+
+			Connection.ClearUpdateContextInput();
+		}
+
+		if ( !Application.IsDedicatedServer )
+		{
+			RichPresenceSystem.Tick();
+			Services.Achievements.Tick();
+		}
+
+		// Advance per frame scene metrics
+		TickSceneStats( scene );
+
+		Analytics.Tick();
+
+		// Run any pending queue'd mainthread tasks here
+		// so they're in the same scene scope
+		MainThread.RunQueues();
+	}
+
+	private void RunGameFrame( Scene activeScene )
+	{
+		if ( !Game.IsPlaying ) return;
+		if ( activeScene is null ) return;
+		if ( Networking.IsConnecting ) return;
+
+		activeScene.GameTick( 0 ); // we already advanced time 
+
+		// Run any pending queue'd mainthread tasks here
+		// so they're in the same scene scope
+		MainThread.RunQueues();
+	}
+
+	public void SimulateUI()
+	{
+		bool mouseIsAllowed = true;
+		if ( IMenuDll.Current is not null )
+		{
+			mouseIsAllowed = !IMenuDll.Current.HasOverlayMouseInput();
+		}
+
+		using ( new ScenePushScope( Game.ActiveScene ) )
+		{
+			Game.Language?.Tick();
+			GlobalContext.Current.UISystem.Simulate( mouseIsAllowed );
+
+			Game.ActiveScene?.ProcessDeletes();
+		}
+	}
+
+	public void ClosePopups( object panelClickedOn )
+	{
+		BasePopup.CloseAll( panelClickedOn as Panel );
+	}
+
+	public void Disconnect( string message = null )
+	{
+		if ( !string.IsNullOrEmpty( message ) )
+		{
+			if ( Networking.System is { } system ) system.FailureReason ??= message;
+			Log.Warning( $"Disconnected: {message.Replace( "\n", "" )}" );
+		}
+
+		if ( Networking.IsMatchmaking )
+		{
+			// don't want any disconnection popups, or to close the game or loading ui - matchmaking should handle all that
+			return;
+		}
+
+		Api.Activity.SetExitReason( string.IsNullOrEmpty( message ) ? "leave" : "disconnect", message );
+		Api.Activity.CancelRequest( Api.Activity.PendingRequest );
+		Api.Activity.LoadAbandoned( string.IsNullOrEmpty( message ) ? null : message );
+
+		// cancel any in-progress load right now instead of waiting for tick
+		CancelLoad();
+		Game.Close();
+
+		if ( !string.IsNullOrEmpty( message ) )
+		{
+			using var scope = GlobalContext.MenuScope();
+			IModalSystem.Current.Notice( "Disconnected", message, "wifi_off" );
+		}
+
+		LoadingScreen.IsVisible = false;
+	}
+
+	private void CancelLoad()
+	{
+		_loadGameCts?.Cancel();
+		_loadGameCts?.Dispose();
+		_loadGameCts = null;
+	}
+
+	/// <summary>
+	/// Loads the game asynchronously. Only one game loads at a time: any load still in
+	/// flight is cancelled, and this one waits for it to finish tearing down before it starts.
+	/// </summary>
+	public async Task<bool> LoadGamePackageAsync( string ident, GameLoadingFlags flags, CancellationToken ct )
+	{
+		ThreadSafe.AssertIsMainThread();
+
+		var previous = _loadGameTask;
+
+		CancelLoad();
+		_loadGameCts = CancellationTokenSource.CreateLinkedTokenSource( ct );
+
+		_loadGameTask = LoadGamePackageInternalAsync( previous, ident, flags, _loadGameCts.Token );
+		return await _loadGameTask;
+	}
+
+	/// <summary>
+	/// Waits for any previous load to finish tearing down, then runs the load and handles its failure.
+	/// </summary>
+	private async Task<bool> LoadGamePackageInternalAsync( Task previous, string ident, GameLoadingFlags flags, CancellationToken token )
+	{
+		if ( previous is { IsCompleted: false } )
+		{
+			try
+			{
+				await previous;
+			}
+			catch ( System.Exception )
+			{
+				// The previous load reports its own failures
+			}
+		}
+
+		// We may have been superseded ourselves while waiting
+		if ( token.IsCancellationRequested )
+			return false;
+
+		// The previous load hid the loading screen on its way out, it's ours now
+		LoadingScreen.IsVisible = true;
+
+		var launch = Api.Activity.LoadBegin( ident, flags.Contains( GameLoadingFlags.Remote ) );
+
+		try
+		{
+			await DoLoadGamePackageAsync( ident, flags, token );
+
+			if ( token.IsCancellationRequested )
+			{
+				launch.End( "cancel" );
+				return false;
+			}
+
+			// Hosts finish when the startup scene has loaded, clients when the server lets them in
+			launch.Stage( flags.Contains( GameLoadingFlags.Host ) ? "scene" : "join" );
+			return true;
+		}
+		catch ( System.Exception e )
+		{
+			launch.End( e is OperationCanceledException ? "cancel" : "fail", e is OperationCanceledException ? null : e.Message );
+
+			ResetEnvironment();
+
+			if ( e is not OperationCanceledException )
+			{
+				using ( IMenuDll.Current?.PushScope() )
+				{
+					IModalSystem.Current?.Notice( "Loading Error", $"An error occurred when loading this game.\n\n{e.Message}", "error" );
+				}
+
+				Log.Warning( e, e.Message );
+
+				if ( Application.IsEditor )
+				{
+					// raise in editor, load has failed and we should alert the user
+					throw;
+				}
+			}
+
+			LoadingScreen.IsVisible = false;
+			LoadingScreen.Media = null;
+		}
+
+		return false;
+	}
+
+	private async Task DoLoadGamePackageAsync( string ident, GameLoadingFlags flags, CancellationToken ct )
+	{
+		//
+		// We might not need to reload if this is the same package.
+		// Bit of extra dancing here because we want #local to be treated as released
+		//
+		if ( gameInstance is not null && !flags.Contains( GameLoadingFlags.Reload ) )
+		{
+			Package.TryParseIdent( ident, out var iparts );
+			Package.TryParseIdent( gameInstance?.Ident, out var oparts );
+
+			// No need to recreate - this is the same package (and the same version)
+			if ( iparts.package == oparts.package && iparts.org == oparts.org && iparts.version == oparts.version )
+				return;
+		}
+
+		// Leave the current game first, fully. If this is part of a remote connection the
+		// session we're on is the one we're joining, so that stays.
+		Api.Activity.LoadStage( "teardown" );
+		LeaveGame( disconnect: !flags.Contains( GameLoadingFlags.Remote ) );
+
+		if ( !Application.IsDedicatedServer && !Application.IsStandalone )
+		{
+			// Get the stats ready
+			var s = Sandbox.Services.Stats.GetGlobalStats( ident );
+			if ( !s.IsRefreshing )
+			{
+				_ = s.Refresh();
+			}
+
+			// get the local stats too
+			var playerStats = Sandbox.Services.Stats.GetLocalPlayerStats( ident );
+			if ( !playerStats.IsRefreshing )
+			{
+				_ = playerStats.Refresh();
+			}
+
+			await Task.Yield();
+			LoadingScreen.Title ??= "Loading..";
+		}
+
+		GameInstance newInstance = default;
+
+		try
+		{
+			if ( Application.IsStandalone )
+			{
+				newInstance = new StandaloneGameInstance( ident, flags );
+			}
+			else
+			{
+				newInstance = new GameInstance( ident, flags );
+			}
+
+			using var _ = GlobalContext.GameScope();
+
+			Api.Activity.LoadStage( "reset" );
+			ResetEnvironment();
+
+			NativeErrorReporter.Breadcrumb( true, "game", $"Loading game package {ident}" );
+			NativeErrorReporter.SetTag( "game", ident );
+			NativeErrorReporter.SetTag( "map", LaunchArguments.Map );
+
+			if ( !Application.IsDedicatedServer && !Application.IsStandalone )
+			{
+				await Task.Yield();
+			}
+
+			if ( !await newInstance.LoadAsync( AssemblyEnroller, ct ) )
+			{
+				if ( ct.IsCancellationRequested )
+					return;
+
+				throw new Exception( "GameInstance load failed" );
+			}
+
+			Json.PopulateReflectionCache( Game.TypeLibrary );
+
+			if ( ct.IsCancellationRequested )
+				return;
+
+			await Task.Yield();
+			GC.Collect( GC.MaxGeneration, GCCollectionMode.Optimized, false, false );
+			await Task.Yield();
+
+			if ( Package.TryParseIdent( ident, out var parsed ) )
+			{
+				EngineFileSystem.Data.CreateDirectory( parsed.org );
+
+				var package = parsed.local ? $"{parsed.package}#local" : parsed.package;
+
+				GlobalContext.Current.FileOrg = EngineFileSystem.Data.CreateSubSystem( parsed.org );
+				GlobalContext.Current.FileOrg.CreateDirectory( package );
+
+				GlobalContext.Current.FileData = FileSystem.OrganizationData.CreateSubSystem( package );
+			}
+			else if ( Application.IsStandalone && ident == Standalone.Manifest.Ident )
+			{
+				GlobalContext.Current.FileOrg = EngineFileSystem.Data;
+				GlobalContext.Current.FileData = EngineFileSystem.Data;
+			}
+			else
+			{
+				EngineFileSystem.Data.CreateDirectory( ".local" );
+
+				GlobalContext.Current.FileOrg = EngineFileSystem.Data.CreateSubSystem( ".local" );
+				GlobalContext.Current.FileOrg.CreateDirectory( ident );
+
+				GlobalContext.Current.FileData = FileSystem.OrganizationData.CreateSubSystem( ident );
+			}
+
+			Game.Cookies = new CookieContainer( "cookies", false, GlobalContext.Current.FileData );
+
+			IGameInstance.Current = newInstance;
+			gameInstance = newInstance;
+			newInstance = default;
+
+			//
+			// Boot up
+			//
+			if ( flags.Contains( GameLoadingFlags.Host ) )
+			{
+				Api.Activity.LoadStage( "scene" );
+
+				// The scene loads synchronously, so the title shown until it returns is whatever the last frame drew
+				LoadingScreen.Title = "Loading Scene";
+				await Task.Yield();
+
+				if ( !gameInstance.OpenStartupScene() )
+				{
+					throw new Exception( "Failed to load startup scene" );
+				}
+			}
+
+			if ( Application.IsEditor )
+			{
+				Game.CheatsEnabled = true; // auto-enable cheats in the editor
+			}
+
+			//
+			// If we're the game, start it straight away.
+			// In editor we're going to start in editor mode
+			//
+			if ( !Application.IsEditor )
+			{
+				Game.IsPlaying = true;
+
+				LoadingScreen.Title = flags.Contains( GameLoadingFlags.Host ) ? "Starting Game" : "Joining Game..";
+				await Task.Yield();
+			}
+		}
+		finally
+		{
+			// Loading failed
+			if ( newInstance is not null )
+			{
+				using var _ = GlobalContext.GameScope();
+
+				newInstance.Close();
+				newInstance.Shutdown();
+				newInstance = default;
+			}
+		}
+	}
+
+	private void OnPackageInstalled( PackageManager.ActivePackage package, string context )
+	{
+		if ( context != "game" ) return;
+		Log.Trace( $"OnPackageInstalled: {package.Package.FullIdent} {context}" );
+
+		// Register assemblies from this package so types are available immediately.
+		AssemblyEnroller?.LoadPackage( package.Package.FullIdent, true );
+	}
+
+	/// <summary>
+	/// Called when the game menu is closed
+	/// </summary>
+	/// <param name="instance"></param>
+	public void Shutdown( IGameInstance instance )
+	{
+		NativeErrorReporter.Breadcrumb( true, "game", "Closed game instance" );
+		NativeErrorReporter.SetTag( "game", null );
+		NativeErrorReporter.SetTag( "map", null );
+
+		if ( gameInstance == instance ) gameInstance = null;
+		if ( IGameInstance.Current == instance ) IGameInstance.Current = null;
+	}
+
+	public void OnRender( SwapChainHandle_t swapChain )
+	{
+		Game.Render( swapChain );
+	}
+
+	/// <summary>
+	/// The play button was pressed in the editor
+	/// </summary>
+	public bool EditorPlay()
+	{
+		if ( gameInstance is null )
+		{
+			Log.Warning( "Tried to editor play but we don't have a game instance" );
+			return false;
+		}
+
+		Game.IsPlaying = true;
+
+		if ( !gameInstance.OpenStartupScene() )
+		{
+			Log.Warning( "There was a problem opening the StartupScene" );
+			Game.ActiveScene?.Destroy();
+			Game.ActiveScene = null;
+			Game.IsPlaying = false;
+			return false;
+		}
+
+		return true;
+	}
+
+	public TypeLibrary TypeLibrary => Sandbox.Internal.GlobalGameNamespace.TypeLibrary;
+
+	/// <summary>
+	/// Pushes the game scope. This will push the active scene and the right time.
+	/// </summary>
+	public ScenePushScope PushScope()
+	{
+		return new ScenePushScope( Game.ActiveScene );
+	}
+
+	/// <summary>
+	/// Called per frame to add scene's stats to our analytics
+	/// </summary>
+	void TickSceneStats( Scene scene )
+	{
+		var sceneValid = scene.IsValid();
+
+		// Counted with direct queries, this runs every frame
+		int cameraCount = 0, particleCount = 0;
+		if ( sceneValid )
+		{
+			foreach ( var _ in scene.Query<CameraComponent>() ) cameraCount++;
+			foreach ( var effect in scene.Query<ParticleEffect>() ) particleCount += effect.Particles.Count;
+		}
+
+		Api.Performance.CollectStat( "GameObjectCount", sceneValid ? scene.Directory.GameObjectCount : 0 );
+		Api.Performance.CollectStat( "ComponentCount", sceneValid ? scene.Directory.ComponentCount : 0 );
+		Api.Performance.CollectStat( "RootGameObjects", sceneValid ? scene.Children.Count : 0 );
+		Api.Performance.CollectStat( "CameraCount", cameraCount );
+		Api.Performance.CollectStat( "ColliderCount", sceneValid ? scene.PhysicsWorld.BodyCount : 0 );
+		Api.Performance.CollectStat( "Particles", particleCount );
+
+		Api.Performance.CollectStat( "GameObjectsDestroyed", SceneMetrics.GameObjectsDestroyed );
+		Api.Performance.CollectStat( "ParticlesCreated", SceneMetrics.ParticlesCreated );
+		Api.Performance.CollectStat( "ParticlesDestroyed", SceneMetrics.ParticlesDestroyed );
+		Api.Performance.CollectStat( "GameObjectsCreated", SceneMetrics.GameObjectsCreated );
+		Api.Performance.CollectStat( "GameObjectsDestroyed", SceneMetrics.GameObjectsDestroyed );
+		Api.Performance.CollectStat( "ComponentsCreated", SceneMetrics.ComponentsCreated );
+		Api.Performance.CollectStat( "ComponentsDestroyed", SceneMetrics.ComponentsDestroyed );
+		Api.Performance.CollectStat( "RayTrace", SceneMetrics.RayTrace );
+		Api.Performance.CollectStat( "RayTraceAll", SceneMetrics.RayTraceAll );
+
+		SceneMetrics.Flip();
+	}
+
+	void IGameInstanceDll.ResetSceneListenerMetrics()
+	{
+		Game.ActiveScene.ResetListenerMetrics();
+	}
+
+	object IGameInstanceDll.GetSceneListenerMetrics()
+	{
+		return Game.ActiveScene.GetListenerMetrics();
+	}
+
+	[ConCmd( "game", ConVarFlags.Protected, Help = "Play a game" )]
+	public static async Task StartGame( string gameIdent, string mapIdent = null )
+	{
+		// We don't want to open games in the editor
+		if ( Application.IsEditor )
+			return;
+
+		Api.Activity.GameRequested( new( "console", gameIdent ), replace: false );
+
+		// Local automation can launch a project directly, just like a dedicated server.
+		if ( (Application.IsDedicatedServer || Sandbox.Utility.CommandLine.HasSwitch( "-mcp" ))
+			&& gameIdent.EndsWith( ".sbproj", StringComparison.OrdinalIgnoreCase ) )
+		{
+			await Project.InitializeBuiltIn( false );
+
+			var project = Project.AddFromFile( gameIdent );
+
+			NativeEngine.FullFileSystem.AddProjectPath( gameIdent, project.GetAssetsPath().ToLowerInvariant() );
+
+			var libraries = Path.Combine( project.RootDirectory.FullName, "Libraries" );
+
+			// We should iterate all available libraries and add their projects
+			foreach ( var folder in Directory.Exists( libraries ) ? Directory.EnumerateDirectories( libraries ) : [] )
+			{
+				var configs = Directory.EnumerateFiles( folder, "*.sbproj" ).ToArray();
+				if ( configs.Length != 1 ) continue;
+				Project.AddFromFile( configs[0] );
+			}
+
+			// We need to reload the project since we may have had a bunch of libraries added
+			project.Load();
+
+			await Project.CompileAsync();
+
+			if ( !project.Active )
+			{
+				Log.Error( $"Unable to load {gameIdent}" );
+				return;
+			}
+
+			gameIdent = project.Package.FullIdent;
+		}
+
+		Log.Info( $"Loading game '{gameIdent}'" );
+
+		LaunchArguments.Map = mapIdent;
+
+		if ( LaunchArguments.Map is not null )
+		{
+			Log.Info( $" with map: '{LaunchArguments.Map}'" );
+		}
+
+		LoadingScreen.IsVisible = true;
+		LoadingScreen.Media = null;
+		LoadingScreen.Title = null;
+
+		await Current.LoadGamePackageAsync( gameIdent, GameLoadingFlags.Host, default );
+	}
+
+	public static void Create()
+	{
+		IGameInstanceDll.Current = new GameInstanceDll();
+
+		// PreJIT the methods in these dlls on background threads to avoid stalls during gameplay
+		_ = Sandbox.ReflectionUtility.PreJITAsync( typeof( GameInstanceDll ).Assembly );
+		_ = Sandbox.ReflectionUtility.PreJITAsync( typeof( Vector3 ).Assembly );
+		_ = Sandbox.ReflectionUtility.PreJITAsync( typeof( Bootstrap ).Assembly );
+	}
+
+	/// <summary>
+	/// Try to get the replicated var value from the host
+	/// </summary>
+	public bool TryGetReplicatedVarValue( string name, out string value )
+	{
+		value = default;
+
+		if ( !Networking.IsActive ) return false;
+		if ( Networking.IsHost ) return false;
+
+		return ReplicatedConvars.TryGetValue( name, out value );
+	}
+
+	public InputContext InputContext { get; private set; }
+
+	internal void SetupInputContext()
+	{
+		var uiSystem = new UISystem();
+
+		var input = new InputContext();
+		input.Name = GetType().Name;
+		input.TargetUISystem = uiSystem;
+		input.OnGameMouseWheel += Sandbox.Input.AddMouseWheel;
+		input.OnMouseMotion += Sandbox.Input.AddMouseMovement;
+		input.OnGameButton += Input.OnButton;
+
+		InputContext = input;
+
+		GlobalContext.Current.UISystem = uiSystem;
+		GlobalContext.Current.InputContext = input;
+	}
+
+	/// <summary>
+	/// Load the assemblies from this package into the current game instance
+	/// </summary>
+	public Task LoadPackageAssembliesAsync( Package package )
+	{
+		AssemblyEnroller.LoadPackage( package.FullIdent, true );
+		return Task.CompletedTask;
+	}
+}

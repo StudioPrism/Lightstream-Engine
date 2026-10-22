@@ -1,0 +1,12 @@
+{
+	"volume": 0.500000,
+	"sounds":
+	[
+		"sounds/tools/sfm/denyundo.vsnd"
+	],
+	"VolumeRandom": 0.000000,
+	"Pitch": 1.000000,
+	"PitchRandom": 0.000000,
+	"DistanceMax": 500.000000,
+	"UI": false
+}
